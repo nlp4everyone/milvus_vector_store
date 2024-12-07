@@ -1,7 +1,11 @@
-from pymilvus import MilvusClient, CollectionSchema, DataType
+# Typing
 from typing import Optional, Union, List, Sequence, Literal
 from llama_index.core.schema import BaseNode, NodeWithScore
+from langchain_core.documents.base import Document
 from llama_index.core.embeddings import BaseEmbedding
+from langchain_core.embeddings import Embeddings
+from pymilvus import exceptions
+# Base vector store
 from .base import BaseVectorStore, node_with_score_fields
 
 # DataType
@@ -13,7 +17,7 @@ _DEFAULT_UPLOAD_BATCH_SIZE = 16
 
 class MilvusVectorStore(BaseVectorStore):
     def __init__(self,
-                 dense_embedding_model: BaseEmbedding = None,
+                 dense_embedding_model: Union[BaseEmbedding,Embeddings] = None,
                  collection_name: str = "milvus_vector_store",
                  uri: str = "http://localhost:19530",
                  user :str = "",
@@ -21,15 +25,16 @@ class MilvusVectorStore(BaseVectorStore):
                  db_name :str = "",
                  token :str = "",
                  search_metrics :Literal["COSINE","L2","IP","HAMMING","JACCARD"] = "COSINE",
-                 index_algo: Literal["FLAT", "IVF_FLAT", "IVF_SQ8", "IVF_PQ", "HNSW", "SCANN"] = "IVF_FLAT") -> None:
+                 index_algo: Literal["FLAT", "IVF_FLAT", "IVF_SQ8", "IVF_PQ", "HNSW", "SCANN"] = "IVF_FLAT",
+                 **kwargs) -> None:
 
         """
         Init Milvus client service
 
         :param collection_name: The name of collection (Required).
         :type collection_name: str
-        :param url: The Milvus url string.
-        :type url: str
+        :param uri: The Milvus url string.
+        :type uri: str
         :param user: User information
         :type user: str
         :param db_name: Database name
@@ -39,32 +44,24 @@ class MilvusVectorStore(BaseVectorStore):
         """
         assert collection_name, "Collection name must be string"
         # Inheritance
-        super().__init__(dense_embedding_model = dense_embedding_model,
-                         collection_name = collection_name,
+        super().__init__(collection_name = collection_name,
                          uri = uri,
+                         user = user,
+                         password = password,
+                         db_name = db_name,
+                         token = token,
                          search_metrics = search_metrics,
-                         index_algo = index_algo)
-
-        # Private value
-        self.__user = user
-        self.__password = password
-        self.__db_name = db_name
-        self.__token = token
-
-        # init client
-        self._client = MilvusClient(uri = self._uri,
-                                    user = self.__user,
-                                    password = self.__password,
-                                    db_name = self.__db_name,
-                                    token = self.__token)
-
-
+                         index_algo = index_algo,
+                         **kwargs)
+        # Dense model
+        self._dense_embedding_model = dense_embedding_model
 
     def insert_documents(self,
-                         documents :Sequence[BaseNode],
+                         documents :Sequence[Union[BaseNode,Document]],
                          partition_name: str,
                          embedded_batch_size: int = 16,
-                         embedded_num_workers: int = 4) -> int:
+                         embedded_num_workers: int = 4,
+                         **kwargs) -> int:
         """
         Insert document to collection.
 
@@ -83,43 +80,38 @@ class MilvusVectorStore(BaseVectorStore):
         if self._dense_embedding_model is None:
             raise ValueError("Please import embedding model!")
 
-        list_partitions = self.list_partition()
-        # Check condition
-        is_accepted = set(partition_name).issubset(set(list_partitions))
-        if not is_accepted:
-            raise ValueError(f"Partition: {partition_name} not existed!")
-
         # Convert BaseNode to Dict and remove redundant information
         nodes = self._convert_upsert_data(documents = documents)
-        # Get content (text information) from node
-        contents = [node['text'] for node in nodes]
+
+        # Get content
+        if isinstance(documents[0], BaseNode):
+            # LlamaIndex BaseNode case
+            contents = [doc.get_content() for doc in documents]
+        else:
+            # Langchain Document case
+            contents = [doc.page_content for doc in documents]
 
         # Get embeddings
-        if isinstance(self._dense_embedding_model,BaseEmbedding):
-            # Return vector representation (Embedding arrays)
-            embeddings = self._get_embeddings(texts = contents,
-                                              embedding_model = self._dense_embedding_model,
-                                              batch_size = embedded_batch_size,
-                                              num_workers = embedded_num_workers)
-            # Add embedding to node
-            for i in range(len(nodes)): nodes[i].update({"embedding" : embeddings[i]})
-
+        embeddings = self._embed_texts(texts = contents,
+                                       embedding_model = self._dense_embedding_model,
+                                       batch_size = embedded_batch_size,
+                                       num_workers = embedded_num_workers)
+        # Add embedding to node
+        for i in range(len(nodes)): nodes[i].update({"embedding" : embeddings[i]})
         # Get dimension nums
         dimension_nums = len(nodes[0]['embedding'])
 
-        try:
-            # Create collection if doesnt exist
-            self._create_collection(dimension_nums = dimension_nums)
+        # Create collection if doesnt exist
+        self._create_collection(dimension_nums = dimension_nums)
 
-            # Create partition if doesnt exist
-            self._create_partition(partition_name = partition_name)
+        # Create partition if doesnt exist
+        self._create_partition(partition_name = partition_name)
 
-            # Insert to partition inside collection
-            res = self._client.insert(collection_name = self._collection_name,
-                                      partition_name = partition_name,
-                                      data = nodes)
-        except Exception as e:
-            raise Exception(e)
+        # Insert to partition inside collection
+        res = self.insert(collection_name = self._collection_name,
+                          partition_name = partition_name,
+                          data = nodes,
+                          **kwargs)
 
         # Return number of inserted items
         return res['insert_count']
@@ -157,21 +149,21 @@ class MilvusVectorStore(BaseVectorStore):
             wrong_partition = ",".join(partition_names)
             raise ValueError(f"Partitions: {wrong_partition} not existed!")
 
-        # Get query embedding
-        query_embedding = None
-        # Get query representation from BaseEmbedding model
+        # Get query representation from Llama Index BaseEmbedding model
         if isinstance(self._dense_embedding_model, BaseEmbedding):
             query_embedding = self._dense_embedding_model.get_query_embedding(query = query)
+        else:
+            # Get query representation from Langchain Embeddings model
+            query_embedding = self._dense_embedding_model.embed_query(text = query)
 
         # Get the retrieved text
-        results = self._client.search(
-            collection_name = self._collection_name,
-            partition_names = partition_names,
-            data = [query_embedding],
-            limit = limit,
-            output_fields = node_with_score_fields,
-            search_params = {"metric_type": self._search_metrics},
-        )
+        results = self.search(collection_name = self._collection_name,
+                              partition_names = partition_names,
+                              data = [query_embedding],
+                              limit = limit,
+                              output_fields = node_with_score_fields,
+                              search_params = {"metric_type": self._search_metrics},
+                              **kwargs)
 
         # Convert to list
         results = results[0]
@@ -190,17 +182,18 @@ class MilvusVectorStore(BaseVectorStore):
         """
 
         # Check collection exist
-        if not self._client.has_collection(self._collection_name):
+        if not self.has_collection(self._collection_name):
             raise Exception(f"Collection {self._collection_name} is not exist!")
         # Return information
-        return self._client.describe_collection(collection_name=self._collection_name)
+        return self.describe_collection(collection_name=self._collection_name)
 
     def list_partition(self):
         # Check collection exist
-        if not self._client.has_collection(self._collection_name):
+        if not self.has_collection(self._collection_name):
             raise Exception(f"Collection {self._collection_name} is not exist!")
+
         # Return information
-        return self._client.list_partitions(collection_name = self._collection_name)
+        return self.list_partitions(collection_name = self._collection_name)
 
 
 

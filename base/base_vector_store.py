@@ -1,7 +1,12 @@
 # Typing
+import uuid
 from typing import  List, Sequence, Literal, Optional, Union
 from llama_index.core.schema import BaseNode, NodeWithScore, TextNode
+from langchain_core.documents.base import Document
 from llama_index.core.embeddings import BaseEmbedding
+from langchain_core.embeddings import Embeddings
+# Client
+from pymilvus import MilvusClient
 # Milvus components
 from pymilvus import CollectionSchema, DataType
 # Fields
@@ -13,35 +18,43 @@ node_with_score_fields = ['id_', 'embedding', 'metadata', 'excluded_embed_metada
 # DataType
 Embedding = List[float]
 
-class BaseVectorStore:
+class BaseVectorStore(MilvusClient):
     def __init__(self,
-                 dense_embedding_model: BaseEmbedding = None,
                  collection_name: str = "milvus_vector_store",
                  uri: str = "http://localhost:19530",
+                 user: str = "",
+                 password: str = "",
+                 db_name: str = "",
+                 token: str = "",
                  search_metrics: Literal["COSINE", "L2", "IP", "HAMMING", "JACCARD"] = "COSINE",
-                 index_algo :Literal["FLAT","IVF_FLAT","IVF_SQ8","IVF_PQ","HNSW","SCANN"] = "IVF_FLAT"):
+                 index_algo :Literal["FLAT","IVF_FLAT","IVF_SQ8","IVF_PQ","HNSW","SCANN"] = "IVF_FLAT",
+                 **kwargs):
+        # Inheritance
+        super().__init__(uri = uri,
+                         user = user,
+                         password = password,
+                         db_name = db_name,
+                         token = token,
+                         **kwargs)
+
         # Define params
         self._collection_name = collection_name
         self._search_metrics = search_metrics
         self._index_algo = index_algo
         self._uri = uri
-        self._client = None
-
-        # Hybrid search
-        self._dense_embedding_model = dense_embedding_model
 
     @staticmethod
-    def _get_embeddings(texts: list[str],
-                        embedding_model: BaseEmbedding,
-                        batch_size: int,
-                        num_workers: int,
-                        show_progress: bool = True) -> List[Embedding]:
+    def _embed_texts(texts: list[str],
+                     embedding_model: Union[BaseEmbedding,Embeddings],
+                     batch_size: int,
+                     num_workers: int,
+                     show_progress: bool = True) -> List[Embedding]:
         """
         Return embedding from documents
 
         Args:
             texts (list[str]): List of input text
-            embedding_model (BaseEmbedding): The text embedding model
+            embedding_model (BaseEmbedding/Embeddings): The text embedding model
             batch_size (int): The desired batch size
             num_workers (int): The desired num workers
             show_progress (bool): Indicate show progress or not
@@ -49,15 +62,21 @@ class BaseVectorStore:
         Returns:
              Return list of Embedding
         """
-        # Set batch size and num workers
-        embedding_model.num_workers = num_workers
-        embedding_model.embed_batch_size = batch_size
-        # Return embedding
-        return embedding_model.get_text_embedding_batch(texts = texts,
-                                                        show_progress = show_progress)
+        # Base Embedding encode text
+        if isinstance(embedding_model, BaseEmbedding):
+            # Set batch size and num workers
+            embedding_model.num_workers = num_workers
+            embedding_model.embed_batch_size = batch_size
+            # Return embedding
+            return embedding_model.get_text_embedding_batch(texts = texts,
+                                                            show_progress = show_progress)
+        # Langchain Embeddings
+        embedding_model :Embeddings
+        return embedding_model.embed_documents(texts = texts)
+
 
     @staticmethod
-    def _convert_upsert_data(documents: Sequence[BaseNode]) -> list[dict]:
+    def _convert_upsert_data(documents: Sequence[Union[BaseNode,Document]]) -> list[dict]:
         """
         Construct the payload data from LlamaIndex document/node datatype
 
@@ -68,21 +87,28 @@ class BaseVectorStore:
             Payloads (list[dict).
         """
 
-        # Clear private data from payload
-        for i in range(len(documents)):
-            documents[i].embedding = None
-            # Pop file path
-            if documents[i].metadata.get("file_path"):
-                documents[i].metadata.pop("file_path")
-            # documents[i].excluded_embed_metadata_keys = []
-            # documents[i].excluded_llm_metadata_keys = []
-            # Remove metadata in relationship
-            for key in documents[i].relationships.keys():
-                documents[i].relationships[key].metadata = {}
+        # Check document type
+        if isinstance(documents[0],BaseNode):
+            # Clear private data from payload
+            for i in range(len(documents)):
+                documents[i].embedding = None
+                # Pop file path
+                if documents[i].metadata.get("file_path"):
+                    documents[i].metadata.pop("file_path")
+                # documents[i].excluded_embed_metadata_keys = []
+                # documents[i].excluded_llm_metadata_keys = []
+                # Remove metadata in relationship
+                for key in documents[i].relationships.keys():
+                    documents[i].relationships[key].metadata = {}
 
-        # Get payloads
-        payloads = [document.dict() for document in documents]
-        return payloads
+            # Get payloads
+            return [document.dict() for document in documents]
+        else:
+            # Langchain Document
+            return [{"id_": str(uuid.uuid4()),
+                     "page_content": document.page_content,
+                     "metadata": document.metadata,
+                     "_node_type": document.type} for document in documents]
 
     @staticmethod
     def _convert_response_to_node_with_score(responses: List[dict],
@@ -120,7 +146,7 @@ class BaseVectorStore:
              vector_type (DataType): Type of vector
              vector_dims (int): Numbers for embedding dimension.
         """
-        schema = self._client.create_schema(
+        schema = self.create_schema(
             auto_id = False,
             enable_dynamic_field = True,
         )
@@ -149,7 +175,7 @@ class BaseVectorStore:
             params : The fine-tuning parameters for the specified index type.
         """
         # Define index
-        index_params = self._client.prepare_index_params()
+        index_params = self.prepare_index_params()
         if params == None:
             params = {"nlist": 128}
 
@@ -171,19 +197,19 @@ class BaseVectorStore:
         """
 
         # When collection isnt established
-        if not self._client.has_collection(collection_name = self._collection_name):
+        if not self.has_collection(collection_name = self._collection_name):
             # Define schema
             schema = self._setup_collection_schema(vector_dims = dimension_nums)
             # Define index
             index_params = self._setup_collection_index(index_algo = self._index_algo,
                                                         search_metric = self._search_metrics)
             # Collection for LlamaIndex payloads
-            self._client.create_collection(collection_name = self._collection_name,
-                                           schema = schema,
-                                           index_params = index_params)
+            self.create_collection(collection_name = self._collection_name,
+                                   schema = schema,
+                                   index_params = index_params)
 
             # Return state
-            res = self._client.get_load_state(
+            res = self.get_load_state(
                 collection_name = self._collection_name
             )
             return res
@@ -195,15 +221,15 @@ class BaseVectorStore:
         """
         assert partition_name, "Collection name must be a string"
         # Check whether partition is existed or not.
-        if not self._client.has_partition(collection_name = self._collection_name, partition_name = partition_name):
+        if not self.has_partition(collection_name = self._collection_name, partition_name = partition_name):
             # Create collection
-            self._client.create_partition(collection_name = self._collection_name,
-                                          partition_name = partition_name)
+            self.create_partition(collection_name = self._collection_name,
+                                  partition_name = partition_name)
             # Return state
-            res = self._client.get_load_state(
-                collection_name = self._collection_name
-            )
-            return res
+            return self.get_load_state(collection_name = self._collection_name)
+        else:
+            return self.get_partition_stats(collection_name = self._collection_name,
+                                            partition_name = partition_name)
 
     def retrieve(self,
                  query: str,
