@@ -4,7 +4,6 @@ from llama_index.core.schema import BaseNode, NodeWithScore
 from langchain_core.documents.base import Document
 from llama_index.core.embeddings import BaseEmbedding
 from langchain_core.embeddings import Embeddings
-from pymilvus import exceptions
 # Base vector store
 from .base import BaseVectorStore, node_with_score_fields
 
@@ -102,10 +101,18 @@ class MilvusVectorStore(BaseVectorStore):
         dimension_nums = len(nodes[0]['embedding'])
 
         # Create collection if doesnt exist
-        self._create_collection(dimension_nums = dimension_nums)
+        if not self.has_collection(collection_name = self._collection_name):
+            self._create_collection(dimension_nums = dimension_nums)
 
         # Create partition if doesnt exist
-        self._create_partition(partition_name = partition_name)
+        if not self.has_partition(collection_name = self._collection_name,
+                                  partition_name = partition_name):
+            # Create partition
+            self._create_partition(partition_name = partition_name)
+        else:
+            self.__verify_collection_dimension(collection_name = self._collection_name,
+                                               embedding_dimension = dimension_nums)
+
 
         # Insert to partition inside collection
         res = self.insert(collection_name = self._collection_name,
@@ -194,6 +201,41 @@ class MilvusVectorStore(BaseVectorStore):
 
         # Return information
         return self.list_partitions(collection_name = self._collection_name)
+
+    def __verify_collection_dimension(self,
+                                      collection_name :str,
+                                      embedding_dimension :int):
+        # Check partition stats
+        stats = self.describe_collection(collection_name = collection_name)
+
+        # Embedding stats
+        collection_stats = dict(stats).get("fields")
+        if collection_stats is None:
+            raise ValueError("Fields not existed in collection")
+        # Stats
+        collection_stats = [stats for stats in collection_stats if dict(stats).get("name") == "embedding"]
+        if len(collection_stats) == 0:
+            raise ValueError("Empty embedding field!")
+
+        # Params
+        collection_params = dict(collection_stats[0]).get("params")
+        if collection_params is None:
+            raise ValueError("Empty params field!")
+        # Dims
+        collection_dims = dict(collection_params).get("dim")
+        if collection_dims is None:
+            raise ValueError("Empty dim field!")
+
+        # Check type
+        if not isinstance(collection_dims,int):
+            raise ValueError("Collection dims must be integer!")
+        # Check dims
+        if embedding_dimension != collection_dims:
+            raise ValueError(f"Embed dimension ({embedding_dimension}) is differ with default collection dimension ({collection_dims})")
+
+
+
+
 
 
 

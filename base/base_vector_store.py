@@ -195,24 +195,21 @@ class BaseVectorStore(MilvusClient):
         Args:
             dimension_nums: Number of dimension for embedding (int)
         """
+        # Define schema
+        schema = self._setup_collection_schema(vector_dims = dimension_nums)
+        # Define index
+        index_params = self._setup_collection_index(index_algo = self._index_algo,
+                                                    search_metric = self._search_metrics)
+        # Collection for LlamaIndex payloads
+        self.create_collection(collection_name = self._collection_name,
+                               schema = schema,
+                               index_params = index_params)
 
-        # When collection isnt established
-        if not self.has_collection(collection_name = self._collection_name):
-            # Define schema
-            schema = self._setup_collection_schema(vector_dims = dimension_nums)
-            # Define index
-            index_params = self._setup_collection_index(index_algo = self._index_algo,
-                                                        search_metric = self._search_metrics)
-            # Collection for LlamaIndex payloads
-            self.create_collection(collection_name = self._collection_name,
-                                   schema = schema,
-                                   index_params = index_params)
-
-            # Return state
-            res = self.get_load_state(
-                collection_name = self._collection_name
-            )
-            return res
+        # Return state
+        res = self.get_load_state(
+            collection_name = self._collection_name
+        )
+        return res
 
     def _create_partition(self,
                           partition_name :str) -> dict:
@@ -221,15 +218,11 @@ class BaseVectorStore(MilvusClient):
         """
         assert partition_name, "Collection name must be a string"
         # Check whether partition is existed or not.
-        if not self.has_partition(collection_name = self._collection_name, partition_name = partition_name):
-            # Create collection
-            self.create_partition(collection_name = self._collection_name,
-                                  partition_name = partition_name)
-            # Return state
-            return self.get_load_state(collection_name = self._collection_name)
-        else:
-            return self.get_partition_stats(collection_name = self._collection_name,
-                                            partition_name = partition_name)
+        # Create collection
+        self.create_partition(collection_name = self._collection_name,
+                              partition_name = partition_name)
+        # Return state
+        return self.get_load_state(collection_name = self._collection_name)
 
     def retrieve(self,
                  query: str,
