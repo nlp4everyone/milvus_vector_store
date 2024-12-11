@@ -5,7 +5,7 @@ from langchain_core.documents.base import Document
 from llama_index.core.embeddings import BaseEmbedding
 from langchain_core.embeddings import Embeddings
 # Base vector store
-from .base import BaseVectorStore, node_with_score_fields
+from .base import BaseVectorStore
 
 # DataType
 Num = Union[int, float]
@@ -79,6 +79,12 @@ class MilvusVectorStore(BaseVectorStore):
         if self._dense_embedding_model is None:
             raise ValueError("Please import embedding model!")
 
+        # Get document type
+        if isinstance(documents[0],Document):
+            document_type = "Document"
+        else:
+            document_type = "BaseNode"
+
         # Convert BaseNode to Dict and remove redundant information
         nodes = self._convert_upsert_data(documents = documents)
 
@@ -102,7 +108,8 @@ class MilvusVectorStore(BaseVectorStore):
 
         # Create collection if doesnt exist
         if not self.has_collection(collection_name = self._collection_name):
-            self._create_collection(dimension_nums = dimension_nums)
+            self._create_collection(document_type = document_type,
+                                    dimension_nums = dimension_nums)
 
         # Create partition if doesnt exist
         if not self.has_partition(collection_name = self._collection_name,
@@ -127,8 +134,8 @@ class MilvusVectorStore(BaseVectorStore):
                  query :str,
                  partition_names: Union[str, List[str]],
                  limit :int = 3,
-                 return_type :Literal["auto","Node_With_Score"] = "NodeWithScore",
-                 **kwargs) -> Union[Sequence[NodeWithScore],Sequence[dict]]:
+                 return_type :Literal["auto","BasePoints"] = "auto",
+                 **kwargs) -> Union[Sequence[Union[NodeWithScore,Document]],Sequence[dict]]:
         """
         Finding relevant contexts from initial question.
 
@@ -147,7 +154,6 @@ class MilvusVectorStore(BaseVectorStore):
         if self._dense_embedding_model is None:
             raise ValueError("Please import embedding model!")
 
-
         # Get partition of collection name
         list_partitions = self.list_partition()
         # Check condition
@@ -163,12 +169,20 @@ class MilvusVectorStore(BaseVectorStore):
             # Get query representation from Langchain Embeddings model
             query_embedding = self._dense_embedding_model.embed_query(text = query)
 
+        # Verify embedding size
+        self.__verify_collection_dimension(collection_name = self._collection_name,
+                                           embedding_dimension = len(query_embedding))
+
+        # Get collection info
+        collection_info = self.collection_info()
+        collection_fields = [field["name"] for field in collection_info["fields"]]
+
         # Get the retrieved text
         results = self.search(collection_name = self._collection_name,
                               partition_names = partition_names,
                               data = [query_embedding],
                               limit = limit,
-                              output_fields = node_with_score_fields,
+                              output_fields = collection_fields,
                               search_params = {"metric_type": self._search_metrics},
                               **kwargs)
 
@@ -176,12 +190,15 @@ class MilvusVectorStore(BaseVectorStore):
         results = results[0]
 
         # Return
-        if return_type == "auto":
-            # Default output
+        if return_type == "BasePoints":
+            # Default
             return results
-        else:
-            # Convert back to NodeWithScore
-            return self._convert_response_to_node_with_score(responses = results)
+        # Auto mode
+        # Document case
+        if results[0]["entity"].get("page_content"):
+            return self._convert_response_to_document(responses = results)
+        # NodeWithScore case
+        return self._convert_response_to_node_with_score(responses = results)
 
     def collection_info(self):
         """

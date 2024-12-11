@@ -5,15 +5,13 @@ from llama_index.core.schema import BaseNode, NodeWithScore, TextNode
 from langchain_core.documents.base import Document
 from llama_index.core.embeddings import BaseEmbedding
 from langchain_core.embeddings import Embeddings
-# Client
-from pymilvus import MilvusClient
+from ..types import (FundamentalField,
+                     BaseNodeField,
+                     DocumentField)
 # Milvus components
-from pymilvus import CollectionSchema, DataType
-# Fields
-node_with_score_fields = ['id_', 'embedding', 'metadata', 'excluded_embed_metadata_keys', 'excluded_llm_metadata_keys',
-                          'relationships', 'text', 'mimetype', 'start_char_idx', 'end_char_idx', 'text_template',
-                          'metadata_template', 'metadata_seperator', 'class_name']
-
+from pymilvus import (CollectionSchema,
+                      DataType,
+                      MilvusClient)
 
 # DataType
 Embedding = List[float]
@@ -28,8 +26,8 @@ class BaseVectorStore(MilvusClient):
                  token: str = "",
                  search_metrics: Literal["COSINE", "L2", "IP", "HAMMING", "JACCARD"] = "COSINE",
                  index_algo :Literal["FLAT","IVF_FLAT","IVF_SQ8","IVF_PQ","HNSW","SCANN"] = "IVF_FLAT",
+                 dense_datatype :Literal["FLOAT_VECTOR","FLOAT16_VECTOR","BFLOAT16_VECTOR"] = "FLOAT_VECTOR",
                  **kwargs):
-        # Inheritance
         super().__init__(uri = uri,
                          user = user,
                          password = password,
@@ -41,6 +39,7 @@ class BaseVectorStore(MilvusClient):
         self._collection_name = collection_name
         self._search_metrics = search_metrics
         self._index_algo = index_algo
+        self._dense_datatype = dense_datatype
         self._uri = uri
 
     @staticmethod
@@ -86,7 +85,6 @@ class BaseVectorStore(MilvusClient):
         Returns:
             Payloads (list[dict).
         """
-
         # Check document type
         if isinstance(documents[0],BaseNode):
             # Clear private data from payload
@@ -101,14 +99,15 @@ class BaseVectorStore(MilvusClient):
                 for key in documents[i].relationships.keys():
                     documents[i].relationships[key].metadata = {}
 
-            # Get payloads
-            return [document.dict() for document in documents]
+            # Verify object
+            return [BaseNodeField.parse_obj(document.dict()).dict() for document in documents]
         else:
-            # Langchain Document
-            return [{"id_": str(uuid.uuid4()),
-                     "page_content": document.page_content,
-                     "metadata": document.metadata,
-                     "_node_type": document.type} for document in documents]
+            # Langchain Document verify
+            documents = [DocumentField.parse_obj(document.dict()).dict() for document in documents]
+            # Add id_
+            for i in range(len(documents)):
+                documents[i].update({"id_": str(uuid.uuid4())})
+            return documents
 
     @staticmethod
     def _convert_response_to_node_with_score(responses: List[dict],
@@ -136,8 +135,33 @@ class BaseVectorStore(MilvusClient):
         # Return NodeWithScore
         return [NodeWithScore(node=text_nodes[i], score=responses[i]["distance"]) for i in range(len(responses))]
 
+    @staticmethod
+    def _convert_response_to_document(responses: List[dict],
+                                      remove_embedding: bool = True) -> Sequence[Document]:
+        """
+        Convert response from searching to Langchain Document Datatype
+
+        Args:
+            responses (List[dict]): List of dictionary
+        Returns:
+            Sequence of NodeWithScore
+        """
+        # Get node with format
+        results = []
+        for response in responses:
+            # Get the main part
+            temp = dict(response['entity'])
+            # temp.update({"score": response['distance']})
+            # Remove embedding
+            if remove_embedding: temp['embedding'] = None
+            results.append(temp)
+
+        # Return Document
+        return [Document.parse_obj(result) for result in results]
+
     def _setup_collection_schema(self,
-                                 vector_type :DataType = DataType.FLOAT_VECTOR,
+                                 document_type: str,
+                                 dense_datatype :Literal["FLOAT_VECTOR","FLOAT16_VECTOR","BFLOAT16_VECTOR"] = "FLOAT_VECTOR",
                                  vector_dims :int = 768) -> CollectionSchema:
         """
         Create collection schema
@@ -146,19 +170,103 @@ class BaseVectorStore(MilvusClient):
              vector_type (DataType): Type of vector
              vector_dims (int): Numbers for embedding dimension.
         """
+        if dense_datatype == "FLOAT_VECTOR":
+            dense_datatype = DataType.FLOAT_VECTOR
+        elif dense_datatype == "FLOAT16_VECTOR":
+            dense_datatype = DataType.FLOAT16_VECTOR
+        elif dense_datatype == "BFLOAT16_VECTOR":
+            dense_datatype = DataType.BFLOAT16_VECTOR
+        else:
+            raise ValueError(f"Dense data type: {dense_datatype} is not compatible with dense vector field!")
+
         schema = self.create_schema(
-            auto_id = False,
-            enable_dynamic_field = True,
+            auto_id = False
         )
 
-        # Add field
-        schema.add_field(field_name = node_with_score_fields[0],
+        # List all default keys
+        default_keys = list(FundamentalField.model_fields.keys())
+
+        # Add default field
+        # id_ field
+        schema.add_field(field_name = default_keys[0],
                          datatype = DataType.VARCHAR,
                          is_primary = True,
                          max_length = 64)
-        schema.add_field(field_name = node_with_score_fields[1],
-                         datatype = vector_type,
+        # embedding field
+        schema.add_field(field_name = default_keys[1],
+                         datatype = dense_datatype,
                          dim = vector_dims)
+
+        # Add optional keys
+        if document_type == "BaseNode":
+            # BaseNode fields
+            base_node_fields = list(BaseNodeField.model_fields.keys())
+
+            # Add fields
+            # Metadata field
+            schema.add_field(field_name = base_node_fields[1],
+                             datatype = DataType.JSON)
+            # excluded_embed_metadata_keys field
+            schema.add_field(field_name = base_node_fields[2],
+                             datatype = DataType.ARRAY,
+                             element_type = DataType.VARCHAR,
+                             max_capacity = 16,
+                             max_length = 64)
+
+            # excluded_llm_metadata_keys
+            schema.add_field(field_name = base_node_fields[3],
+                             datatype = DataType.ARRAY,
+                             element_type = DataType.VARCHAR,
+                             max_capacity = 16,
+                             max_length = 64)
+
+            # relationships field
+            schema.add_field(field_name = base_node_fields[4],
+                             datatype = DataType.JSON)
+
+            # text field
+            schema.add_field(field_name = base_node_fields[5],
+                             datatype = DataType.VARCHAR,
+                             max_length = 16384)
+
+            # mimetype field
+            schema.add_field(field_name = base_node_fields[6],
+                             datatype = DataType.VARCHAR,
+                             max_length = 16)
+
+            # start_char_idx field
+            schema.add_field(field_name = base_node_fields[7],
+                             datatype = DataType.INT64,
+                             max_length = 8,
+                             nullable = True)
+            # end_char_idx
+            schema.add_field(field_name = base_node_fields[8],
+                             datatype = DataType.INT64,
+                             max_length = 8,
+                             nullable = True)
+            # text_template field
+            schema.add_field(field_name = base_node_fields[9],
+                             datatype = DataType.VARCHAR,
+                             max_length = 64)
+            # metadata_template field
+            schema.add_field(field_name = base_node_fields[10],
+                             datatype = DataType.VARCHAR,
+                             max_length = 32)
+            # metadata_seperator field
+            schema.add_field(field_name = base_node_fields[11],
+                             datatype = DataType.VARCHAR,
+                             max_length = 8)
+        else:
+            document_fields = list(DocumentField.model_fields.keys())
+
+            # Add fields
+            # Metadata field
+            schema.add_field(field_name = document_fields[0],
+                             datatype = DataType.JSON)
+            # page content field
+            schema.add_field(field_name = document_fields[1],
+                             datatype = DataType.VARCHAR,
+                             max_length = 16384)
         return schema
 
     def _setup_collection_index(self,
@@ -179,15 +287,19 @@ class BaseVectorStore(MilvusClient):
         if params == None:
             params = {"nlist": 128}
 
+        # List all default keys
+        default_keys = list(FundamentalField.model_fields.keys())
+
         # Add indexes
-        index_params.add_index(field_name = node_with_score_fields[0])
-        index_params.add_index(field_name = node_with_score_fields[1],
+        index_params.add_index(field_name = default_keys[0])
+        index_params.add_index(field_name = default_keys[1],
                                index_type = index_algo,
                                metric_type = search_metric,
                                params = params)
         return index_params
 
     def _create_collection(self,
+                           document_type: str,
                            dimension_nums :int) -> dict:
         """
         Create collection with default name
@@ -196,7 +308,10 @@ class BaseVectorStore(MilvusClient):
             dimension_nums: Number of dimension for embedding (int)
         """
         # Define schema
-        schema = self._setup_collection_schema(vector_dims = dimension_nums)
+        schema = self._setup_collection_schema(document_type = document_type,
+                                               vector_dims = dimension_nums,
+                                               dense_datatype = self._dense_datatype)
+
         # Define index
         index_params = self._setup_collection_index(index_algo = self._index_algo,
                                                     search_metric = self._search_metrics)

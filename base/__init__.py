@@ -1,1 +1,1 @@
-from .base_vector_store import BaseVectorStore, node_with_score_fields
+from .base_vector_store import BaseVectorStore
