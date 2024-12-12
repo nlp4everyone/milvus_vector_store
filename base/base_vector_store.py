@@ -5,16 +5,18 @@ from llama_index.core.schema import BaseNode, NodeWithScore, TextNode
 from langchain_core.documents.base import Document
 from llama_index.core.embeddings import BaseEmbedding
 from langchain_core.embeddings import Embeddings
-# Client
-from pymilvus import MilvusClient
+from ..types import (FundamentalField,
+                     BaseNodeField,
+                     DocumentField)
 # Milvus components
-from pymilvus import CollectionSchema, DataType
-# Fields
-node_with_score_fields = ['id_', 'embedding', 'metadata', 'excluded_embed_metadata_keys', 'excluded_llm_metadata_keys',
-                          'relationships', 'text', 'mimetype', 'start_char_idx', 'end_char_idx', 'text_template',
-                          'metadata_template', 'metadata_seperator', 'class_name']
+from pymilvus import (CollectionSchema,
+                      DataType,
+                      MilvusClient)
+# Sparse embedding
+from fastembed import SparseTextEmbedding, SparseEmbedding
 
-
+# List all default keys
+default_keys = list(FundamentalField.model_fields.keys())
 # DataType
 Embedding = List[float]
 
@@ -28,8 +30,8 @@ class BaseVectorStore(MilvusClient):
                  token: str = "",
                  search_metrics: Literal["COSINE", "L2", "IP", "HAMMING", "JACCARD"] = "COSINE",
                  index_algo :Literal["FLAT","IVF_FLAT","IVF_SQ8","IVF_PQ","HNSW","SCANN"] = "IVF_FLAT",
+                 dense_datatype :Literal["FLOAT_VECTOR","FLOAT16_VECTOR","BFLOAT16_VECTOR"] = "FLOAT_VECTOR",
                  **kwargs):
-        # Inheritance
         super().__init__(uri = uri,
                          user = user,
                          password = password,
@@ -41,6 +43,7 @@ class BaseVectorStore(MilvusClient):
         self._collection_name = collection_name
         self._search_metrics = search_metrics
         self._index_algo = index_algo
+        self._dense_datatype = dense_datatype
         self._uri = uri
 
     @staticmethod
@@ -74,6 +77,33 @@ class BaseVectorStore(MilvusClient):
         embedding_model :Embeddings
         return embedding_model.embed_documents(texts = texts)
 
+    @staticmethod
+    def _sparse_embed_texts(texts: list[str],
+                            sparse_embedding_model: SparseTextEmbedding,
+                            batch_size :int = 32,
+                            parallel :int = 1) -> List[SparseEmbedding]:
+        """
+        Return embedding from documents
+
+        Args:
+            texts (list[str]): List of input text
+            embedding_model (BaseEmbedding/Embeddings): The text embedding model
+            batch_size (int): The desired batch size
+            num_workers (int): The desired num workers
+            show_progress (bool): Indicate show progress or not
+
+        Returns:
+             Return list of Embedding
+        """
+        # Splade Sparse Embedding encode
+        if isinstance(sparse_embedding_model, SparseTextEmbedding):
+            sparse_embeddings = sparse_embedding_model.embed(documents = texts,
+                                                batch_size = batch_size,
+                                                parallel = parallel)
+            return list(sparse_embeddings)
+        # Doesnt support
+        raise NotImplementedError("This version only support FastEmbed SparseTextEmbedding!")
+
 
     @staticmethod
     def _convert_upsert_data(documents: Sequence[Union[BaseNode,Document]]) -> list[dict]:
@@ -86,7 +116,6 @@ class BaseVectorStore(MilvusClient):
         Returns:
             Payloads (list[dict).
         """
-
         # Check document type
         if isinstance(documents[0],BaseNode):
             # Clear private data from payload
@@ -101,14 +130,15 @@ class BaseVectorStore(MilvusClient):
                 for key in documents[i].relationships.keys():
                     documents[i].relationships[key].metadata = {}
 
-            # Get payloads
-            return [document.dict() for document in documents]
+            # Verify object
+            return [BaseNodeField.parse_obj(document.dict()).dict() for document in documents]
         else:
-            # Langchain Document
-            return [{"id_": str(uuid.uuid4()),
-                     "page_content": document.page_content,
-                     "metadata": document.metadata,
-                     "_node_type": document.type} for document in documents]
+            # Langchain Document verify
+            documents = [DocumentField.parse_obj(document.dict()).dict() for document in documents]
+            # Add id_
+            for i in range(len(documents)):
+                documents[i].update({"id_": str(uuid.uuid4())})
+            return documents
 
     @staticmethod
     def _convert_response_to_node_with_score(responses: List[dict],
@@ -128,7 +158,7 @@ class BaseVectorStore(MilvusClient):
             temp = dict(response['entity'])
             # temp.update({"score": response['distance']})
             # Remove embedding
-            if remove_embedding: temp['embedding'] = None
+            if remove_embedding: temp.update({default_keys[1]:None})
             results.append(temp)
 
         # Define text nodes
@@ -136,9 +166,35 @@ class BaseVectorStore(MilvusClient):
         # Return NodeWithScore
         return [NodeWithScore(node=text_nodes[i], score=responses[i]["distance"]) for i in range(len(responses))]
 
+    @staticmethod
+    def _convert_response_to_document(responses: List[dict],
+                                      remove_embedding: bool = True) -> Sequence[Document]:
+        """
+        Convert response from searching to Langchain Document Datatype
+
+        Args:
+            responses (List[dict]): List of dictionary
+        Returns:
+            Sequence of NodeWithScore
+        """
+        # Get node with format
+        results = []
+        for response in responses:
+            # Get the main part
+            temp = dict(response['entity'])
+            # temp.update({"score": response['distance']})
+            # Remove embedding
+            if remove_embedding: temp.update({default_keys[1]:None})
+            results.append(temp)
+
+        # Return Document
+        return [Document.parse_obj(result) for result in results]
+
     def _setup_collection_schema(self,
-                                 vector_type :DataType = DataType.FLOAT_VECTOR,
-                                 vector_dims :int = 768) -> CollectionSchema:
+                                 document_type: str,
+                                 dense_datatype :Literal["FLOAT_VECTOR","FLOAT16_VECTOR","BFLOAT16_VECTOR"] = "FLOAT_VECTOR",
+                                 vector_dims :int = 768,
+                                 enable_sparse :bool = False) -> CollectionSchema:
         """
         Create collection schema
 
@@ -146,25 +202,113 @@ class BaseVectorStore(MilvusClient):
              vector_type (DataType): Type of vector
              vector_dims (int): Numbers for embedding dimension.
         """
+        if dense_datatype == "FLOAT_VECTOR":
+            dense_datatype = DataType.FLOAT_VECTOR
+        elif dense_datatype == "FLOAT16_VECTOR":
+            dense_datatype = DataType.FLOAT16_VECTOR
+        elif dense_datatype == "BFLOAT16_VECTOR":
+            dense_datatype = DataType.BFLOAT16_VECTOR
+        else:
+            raise ValueError(f"Dense data type: {dense_datatype} is not compatible with dense vector field!")
+
         schema = self.create_schema(
-            auto_id = False,
-            enable_dynamic_field = True,
+            auto_id = False
         )
 
-        # Add field
-        schema.add_field(field_name = node_with_score_fields[0],
+        # Add default field
+        # id_ field
+        schema.add_field(field_name = default_keys[0],
                          datatype = DataType.VARCHAR,
                          is_primary = True,
                          max_length = 64)
-        schema.add_field(field_name = node_with_score_fields[1],
-                         datatype = vector_type,
+        # embedding field
+        schema.add_field(field_name = default_keys[1],
+                         datatype = dense_datatype,
                          dim = vector_dims)
+
+        # Add optional keys
+        if document_type == "BaseNode":
+            # BaseNode fields
+            base_node_fields = list(BaseNodeField.model_fields.keys())
+
+            # Add fields
+            # Metadata field
+            schema.add_field(field_name = base_node_fields[1],
+                             datatype = DataType.JSON)
+            # excluded_embed_metadata_keys field
+            schema.add_field(field_name = base_node_fields[2],
+                             datatype = DataType.ARRAY,
+                             element_type = DataType.VARCHAR,
+                             max_capacity = 16,
+                             max_length = 64)
+
+            # excluded_llm_metadata_keys
+            schema.add_field(field_name = base_node_fields[3],
+                             datatype = DataType.ARRAY,
+                             element_type = DataType.VARCHAR,
+                             max_capacity = 16,
+                             max_length = 64)
+
+            # relationships field
+            schema.add_field(field_name = base_node_fields[4],
+                             datatype = DataType.JSON)
+
+            # text field
+            schema.add_field(field_name = base_node_fields[5],
+                             datatype = DataType.VARCHAR,
+                             max_length = 16384)
+
+            # mimetype field
+            schema.add_field(field_name = base_node_fields[6],
+                             datatype = DataType.VARCHAR,
+                             max_length = 16)
+
+            # start_char_idx field
+            schema.add_field(field_name = base_node_fields[7],
+                             datatype = DataType.INT64,
+                             max_length = 8,
+                             nullable = True)
+            # end_char_idx
+            schema.add_field(field_name = base_node_fields[8],
+                             datatype = DataType.INT64,
+                             max_length = 8,
+                             nullable = True)
+            # text_template field
+            schema.add_field(field_name = base_node_fields[9],
+                             datatype = DataType.VARCHAR,
+                             max_length = 64)
+            # metadata_template field
+            schema.add_field(field_name = base_node_fields[10],
+                             datatype = DataType.VARCHAR,
+                             max_length = 32)
+            # metadata_seperator field
+            schema.add_field(field_name = base_node_fields[11],
+                             datatype = DataType.VARCHAR,
+                             max_length = 8)
+        else:
+            document_fields = list(DocumentField.model_fields.keys())
+
+            # Add fields
+            # Metadata field
+            schema.add_field(field_name = document_fields[0],
+                             datatype = DataType.JSON)
+            # page content field
+            schema.add_field(field_name = document_fields[1],
+                             datatype = DataType.VARCHAR,
+                             max_length = 16384)
+
+        if enable_sparse:
+            # Add sparse field
+            schema.add_field(field_name = default_keys[2], datatype=DataType.SPARSE_FLOAT_VECTOR)
         return schema
 
     def _setup_collection_index(self,
                                 index_algo :Literal["FLAT","IVF_FLAT","IVF_SQ8","IVF_PQ","HNSW","SCANN"] = "IVF_FLAT",
                                 search_metric :Literal["COSINE","L2","IP","HAMMING","JACCARD"] = "COSINE",
-                                params :Optional[dict] = None):
+                                params :Optional[dict] = None,
+                                enable_sparse :bool = False,
+                                sparse_index_type :Literal["SPARSE_INVERTED_INDEX","SPARSE_WAND"] = "SPARSE_INVERTED_INDEX",
+                                sparse_params :Optional[dict] = None):
         """
         Set index (Index params dictate how Milvus organizes your data)
 
@@ -176,43 +320,60 @@ class BaseVectorStore(MilvusClient):
         """
         # Define index
         index_params = self.prepare_index_params()
-        if params == None:
-            params = {"nlist": 128}
+        # Default dense params
+        if params is None: params = {"nlist": 128}
+
+        # Default sparse params
+        if sparse_params is None: sparse_params = {"drop_ratio_build": 0.2}
 
         # Add indexes
-        index_params.add_index(field_name = node_with_score_fields[0])
-        index_params.add_index(field_name = node_with_score_fields[1],
+        index_params.add_index(field_name = default_keys[0])
+        index_params.add_index(field_name = default_keys[1],
                                index_type = index_algo,
                                metric_type = search_metric,
                                params = params)
+
+        # If enable sparse index
+        if enable_sparse:
+            index_params.add_index(
+                field_name = default_keys[2],
+                index_name = sparse_index_type.lower(),
+                index_type = sparse_index_type,
+                metric_type = "IP", # Only Inner Product is used to measure the similarity between 2 sparse vectors.
+                params = sparse_params,
+            )
         return index_params
 
     def _create_collection(self,
-                           dimension_nums :int) -> dict:
+                           document_type: str,
+                           dimension_nums :int,
+                           enable_sparse :bool = False) -> dict:
         """
         Create collection with default name
 
         Args:
             dimension_nums: Number of dimension for embedding (int)
         """
+        # Define schema
+        schema = self._setup_collection_schema(document_type = document_type,
+                                               vector_dims = dimension_nums,
+                                               dense_datatype = self._dense_datatype,
+                                               enable_sparse = enable_sparse)
 
-        # When collection isnt established
-        if not self.has_collection(collection_name = self._collection_name):
-            # Define schema
-            schema = self._setup_collection_schema(vector_dims = dimension_nums)
-            # Define index
-            index_params = self._setup_collection_index(index_algo = self._index_algo,
-                                                        search_metric = self._search_metrics)
-            # Collection for LlamaIndex payloads
-            self.create_collection(collection_name = self._collection_name,
-                                   schema = schema,
-                                   index_params = index_params)
+        # Define index
+        index_params = self._setup_collection_index(index_algo = self._index_algo,
+                                                    search_metric = self._search_metrics,
+                                                    enable_sparse = enable_sparse)
+        # Collection for LlamaIndex payloads
+        self.create_collection(collection_name = self._collection_name,
+                               schema = schema,
+                               index_params = index_params)
 
-            # Return state
-            res = self.get_load_state(
-                collection_name = self._collection_name
-            )
-            return res
+        # Return state
+        res = self.get_load_state(
+            collection_name = self._collection_name
+        )
+        return res
 
     def _create_partition(self,
                           partition_name :str) -> dict:
@@ -221,15 +382,11 @@ class BaseVectorStore(MilvusClient):
         """
         assert partition_name, "Collection name must be a string"
         # Check whether partition is existed or not.
-        if not self.has_partition(collection_name = self._collection_name, partition_name = partition_name):
-            # Create collection
-            self.create_partition(collection_name = self._collection_name,
-                                  partition_name = partition_name)
-            # Return state
-            return self.get_load_state(collection_name = self._collection_name)
-        else:
-            return self.get_partition_stats(collection_name = self._collection_name,
-                                            partition_name = partition_name)
+        # Create collection
+        self.create_partition(collection_name = self._collection_name,
+                              partition_name = partition_name)
+        # Return state
+        return self.get_load_state(collection_name = self._collection_name)
 
     def retrieve(self,
                  query: str,
