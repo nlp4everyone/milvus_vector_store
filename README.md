@@ -19,9 +19,9 @@ pip install -r requirements.txt
 # 📃 To-do List:
 - [x] Milvus Vector Store with LlamaIndex Embeddings <mark>(07/12)</mark>.
 - [x] Integrate with Langchain Embedding <mark>(07/12)</mark>.
-- [x] Sparse embedding intergration (FastEmbed) <mark>(12/12)</mark>.
-- [ ] Hybrid search built-in function
-- [ ] Retrieval with filtering
-- [ ] Batch retrieval
-- [ ] Image retrieval supports
+- [x] Sparse embedding intergration (FastEmbed) <mark>(12/12)</mark>, Milvus/Ollama Sparse Embedding (upcoming) .
+- [ ] Hybrid search built-in function.
+- [ ] Batch retrieval, retrieval with filtering.
+- [ ] Batch upsert data.
+- [ ] Image retrieval supports.
 <br />
