@@ -55,17 +55,13 @@ class BaseVectorStore(MilvusClient):
                      num_workers: int,
                      show_progress: bool = True) -> List[Embedding]:
         """
-        Return embedding from documents
-
-        Args:
-            texts (list[str]): List of input text
-            embedding_model (BaseEmbedding/Embeddings): The text embedding model
-            batch_size (int): The desired batch size
-            num_workers (int): The desired num workers
-            show_progress (bool): Indicate show progress or not
-
-        Returns:
-             Return list of Embedding
+        Get dense representation vector of incoming document contents.
+        :param texts: List of input text
+        :param embedding_model:The model for dense embedding
+        :param batch_size: The desired batch size
+        :param num_workers: The desired num workers
+        :param show_progress: Indicate show progress or not
+        :return: List[Embedding]
         """
         # Base Embedding encode text
         if isinstance(embedding_model, BaseEmbedding):
@@ -83,15 +79,12 @@ class BaseVectorStore(MilvusClient):
     def _embed_query(query: str,
                      embedding_model: Union[BaseEmbedding, Embeddings]) -> Embedding:
         """
-        Get representation vector from input query
-
-        Args:
-            query (str): The query text input
-            embedding_model (BaseEmbedding/Embeddings): The text embedding model
-
-        Returns:
-             Return list of Embedding
+        Get dense representation vector of input query.
+        :param query: The query text input
+        :param embedding_model: The dense embedding model
+        :return:
         """
+
         # Get query representation from Llama Index BaseEmbedding model
         if isinstance(embedding_model, BaseEmbedding):
             return embedding_model.get_query_embedding(query = query)
@@ -104,16 +97,12 @@ class BaseVectorStore(MilvusClient):
                             batch_size :int = 32,
                             parallel :int = 1) -> List[dict]:
         """
-        Get sparse text representation of incoming texts.
-
-        Args:
-            texts (list[str]): List of input text
-            sparse_embedding_model (BaseEmbedding/Embeddings): The text embedding model
-            batch_size (int): The desired batch size
-            parallel (int): The number of parallel processing
-
-        Returns:
-             Sparse Embedding
+        Get sparse representation of incoming document contents.
+        :param texts: List of input texts
+        :param sparse_embedding_model: The dense embedding model for embed
+        :param batch_size: The desired batch size
+        :param parallel: The number of parallel processing
+        :return: List[dict]
         """
         # Splade Sparse Embedding encode
         if isinstance(sparse_embedding_model, SparseTextEmbedding):
@@ -133,16 +122,11 @@ class BaseVectorStore(MilvusClient):
     def _sparse_embed_query(query: str,
                             sparse_embedding_model: SparseTextEmbedding) -> List[dict]:
         """
-        Get sparse text representation of incoming query.
-
-        Args:
-            texts (list[str]): List of input text
-            sparse_embedding_model (BaseEmbedding/Embeddings): The text embedding model
-            batch_size (int): The desired batch size
-            parallel (int): The number of parallel processing
-
-        Returns:
-             Sparse Embedding
+        Get sparse representation of incoming query.
+        :param query: The incoming query
+        :param sparse_embedding_model: The sparse embedding model
+        :return: List of dictionary with indices and values
+        :rtype: List[dict]
         """
         # Convert string to list of string
         if isinstance(query,str): query = [query]
@@ -162,15 +146,11 @@ class BaseVectorStore(MilvusClient):
         raise NotImplementedError("Sparse embedding currently support Milvus/Fastembed!")
 
     @staticmethod
-    def _convert_upsert_data(documents: Sequence[Union[BaseNode,Document]]) -> list[dict]:
+    def _convert_upsert_data(documents: Sequence[Union[BaseNode,Document]]) -> List[dict]:
         """
         Construct the payload data from LlamaIndex document/node datatype
-
-        Args:
-            documents (BaseNode): The list of BaseNode datatype in LlamaIndex
-
-        Returns:
-            Payloads (list[dict).
+        :param documents: The list of LlamaIndex BaseNode objects
+        :return: List[dict]
         """
         # Check document type
         if isinstance(documents[0],BaseNode):
@@ -200,11 +180,9 @@ class BaseVectorStore(MilvusClient):
                                              remove_embedding: bool = True) -> Sequence[NodeWithScore]:
         """
         Convert response from searching to NodeWithScore Datatype (LlamaIndex)
-
-        Args:
-            responses (List[dict]): List of dictionary
-        Returns:
-            Sequence of NodeWithScore
+        :param responses: Response for converting
+        :param remove_embedding: Specify whether remove embedding from output or not
+        :return: Sequence[NodeWithScore]
         """
         # Get node with format
         results = []
@@ -226,12 +204,10 @@ class BaseVectorStore(MilvusClient):
     def _convert_response_to_document(responses: List[dict],
                                       remove_embedding: bool = True) -> Sequence[Document]:
         """
-        Convert response from searching to Langchain Document Datatype
-
-        Args:
-            responses (List[dict]): List of dictionary
-        Returns:
-            Sequence of NodeWithScore
+        Convert response to Langchain Document format
+        :param responses: Response for converting
+        :param remove_embedding: Specify whether remove embedding from output or not
+        :return: Sequence[Document]
         """
         # Get node with format
         results = []
@@ -248,6 +224,11 @@ class BaseVectorStore(MilvusClient):
 
     @staticmethod
     def _convert_csr_array_to_dict(csr_array :scipy.sparse.csr_array) -> dict:
+        """
+        Convert csr array (From Milvus Sparse Embedding) to base dictionary format
+        :param csr_array: Spicy csr array for converting
+        :return: dict
+        """
         return {indice:value for (indice, value) in zip(csr_array.indices,csr_array.data)}
 
     def _setup_collection_schema(self,
@@ -257,11 +238,14 @@ class BaseVectorStore(MilvusClient):
                                  enable_sparse :bool = False) -> CollectionSchema:
         """
         Create collection schema
-
-        Args:
-             vector_type (DataType): Type of vector
-             vector_dims (int): Numbers for embedding dimension.
+        :param document_type: Type of document for indicating fields (BaseNode/ Document)
+        :param dense_datatype: Including following type: FLOAT_VECTOR, FLOAT16_VECTOR , BFLOAT16_VECTOR for storing
+        vectors.
+        :param vector_dims: The dimension of vector (for dense vector)
+        :param enable_sparse: Enable the sparse schema
+        :return: CollectionSchema
         """
+        # Define dense datatype
         if dense_datatype == "FLOAT_VECTOR":
             dense_datatype = DataType.FLOAT_VECTOR
         elif dense_datatype == "FLOAT16_VECTOR":
@@ -271,6 +255,7 @@ class BaseVectorStore(MilvusClient):
         else:
             raise ValueError(f"Dense data type: {dense_datatype} is not compatible with dense vector field!")
 
+        # Define schema
         schema = self.create_schema(
             auto_id = False
         )
@@ -364,19 +349,21 @@ class BaseVectorStore(MilvusClient):
 
     def _setup_collection_index(self,
                                 index_algo :Literal["FLAT","IVF_FLAT","IVF_SQ8","IVF_PQ","HNSW","SCANN"] = "IVF_FLAT",
-                                search_metric :Literal["COSINE","L2","IP","HAMMING","JACCARD"] = "COSINE",
+                                dense_search_metric :Literal["COSINE","L2","IP","HAMMING","JACCARD"] = "COSINE",
                                 params :Optional[dict] = None,
                                 enable_sparse :bool = False,
                                 sparse_index_type :Literal["SPARSE_INVERTED_INDEX","SPARSE_WAND"] = "SPARSE_INVERTED_INDEX",
                                 sparse_params :Optional[dict] = None):
         """
-        Set index (Index params dictate how Milvus organizes your data)
-
-        Args:
-            index_algo : The name of the algorithm used to arrange data in the specific field
-            search_metric : The algorithm that is used to measure similarity between vectors. Possible values are
-            IP, L2, COSINE, JACCARD, HAMMING.
-            params : The fine-tuning parameters for the specified index type.
+        Define collection index (Index params dictate how Milvus organizes your data)
+        :param index_algo: Name of the algorithm used to arrange data in the specific field ( FLAT,IVF_FLAT,etc).
+        :param dense_search_metric: The algorithm that is used to measure similarity between vectors. Possible values are
+        IP, L2, COSINE, JACCARD, HAMMING (For dense representation).
+        :param params: The fine-tuning parameters for the specified dense index type.
+        :param enable_sparse: Enable the sparse schema or not
+        :param sparse_index_type: Index type using with sparse (SPARSE_INVERTED_INDEX ,SPARSE_WAND)
+        :param sparse_params:  The fine-tuning parameters for the specified sparse index type.
+        :return:
         """
         # Define index
         index_params = self.prepare_index_params()
@@ -392,7 +379,7 @@ class BaseVectorStore(MilvusClient):
         index_params.add_index(field_name = default_keys[1],
                                index_name = "dense_index",
                                index_type = index_algo,
-                               metric_type = search_metric,
+                               metric_type = dense_search_metric,
                                params = params)
 
         # If enable sparse index
@@ -411,10 +398,11 @@ class BaseVectorStore(MilvusClient):
                            dimension_nums :int,
                            enable_sparse :bool = False) -> dict:
         """
-        Create collection with default name
-
-        Args:
-            dimension_nums: Number of dimension for embedding (int)
+        Create Milvus collection with defined setting
+        :param document_type: Type of input document (BaseNode,Document)
+        :param dimension_nums: Number of dimension for embedding
+        :param enable_sparse: Enable the sparse schema or not
+        :return: dict
         """
         # Define schema
         schema = self._setup_collection_schema(document_type = document_type,
@@ -424,7 +412,7 @@ class BaseVectorStore(MilvusClient):
 
         # Define index
         index_params = self._setup_collection_index(index_algo = self._index_algo,
-                                                    search_metric = self._dense_search_metrics,
+                                                    dense_search_metric = self._dense_search_metrics,
                                                     enable_sparse = enable_sparse)
         # Collection for LlamaIndex payloads
         self.create_collection(collection_name = self._collection_name,
@@ -441,6 +429,8 @@ class BaseVectorStore(MilvusClient):
                           partition_name :str) -> dict:
         """
         Create partition from predefined name.
+        :param partition_name: Partition name
+        :return: dict
         """
         assert partition_name, "Collection name must be a string"
         # Check whether partition is existed or not.
@@ -455,19 +445,39 @@ class BaseVectorStore(MilvusClient):
                  partition_names: Union[str, List[str]],
                  limit: int = 3,
                  **kwargs):
+        """
+
+        :param query: A query for searching
+        :param partition_names: Choose partition for retrieving. Default is current partition.
+        :param limit:  Number of resulted responses.
+        :param kwargs: Additional params
+        :return:
+        """
         raise NotImplementedError
 
     def insert_documents(self,
                          documents: Sequence[BaseNode],
                          partition_name: str):
+        """
+        Insert document to a specified partition of collection.
+
+        :param documents: List of BaseNode.
+        :param partition_name: Name of partition for inserting data
+        :return:
+        """
         raise NotImplementedError
 
     def collection_info(self):
         """
-        Return collection info
+        Describe collection information
+        :return:
         """
         raise NotImplementedError
 
-    def list_partition(self):
+    def list_partition(self) -> List[str]:
+        """
+        Return list of partition of defined collection
+        :return: List[str]
+        """
         # Check collection exist
         raise NotImplementedError

@@ -41,10 +41,18 @@ class MilvusVectorStore(BaseVectorStore):
         :type uri: str
         :param user: User information
         :type user: str
+        :param password: Password
+        :type password: str
         :param db_name: Database name
         :type db_name: str
         :param token: Token information
         :type token: str
+        :param dense_search_metrics: The algorithm that is used to measure similarity between vectors. Possible values are
+        IP, L2, COSINE, JACCARD, HAMMING (For dense representation).
+        :type dense_search_metrics: str
+        :param token: Name of the algorithm used to arrange data in the specific field ( FLAT,IVF_FLAT,etc).
+        :type token: str
+        :param kwargs: Additional params
         """
         assert collection_name, "Collection name must be string"
         # Inheritance
@@ -69,10 +77,12 @@ class MilvusVectorStore(BaseVectorStore):
                          embedded_num_workers: int = 4,
                          **kwargs) -> int:
         """
-        Insert document to collection.
+        Insert document to a specified partition of collection.
 
         :param documents: List of BaseNode.
         :type documents: Sequence[BaseNode]
+        :param partition_name: Name of partition for inserting data
+        :type partition_name: str
         :param embedded_batch_size: Batch size for embedding model. Default is 64.
         :type embedded_batch_size: int
         :param embedded_num_workers: Batch size for embedding model (Optional). Default is None.
@@ -87,10 +97,7 @@ class MilvusVectorStore(BaseVectorStore):
             raise ValueError("Please import embedding model!")
 
         # Get document type
-        if isinstance(documents[0],Document):
-            document_type = "Document"
-        else:
-            document_type = "BaseNode"
+        document_type = "Document"  if isinstance(documents[0], Document) else "BaseNode"
 
         # Convert BaseNode to Dict and remove redundant information
         nodes = self._convert_upsert_data(documents = documents)
@@ -155,7 +162,7 @@ class MilvusVectorStore(BaseVectorStore):
                  limit :int = 3,
                  mode: Literal["dense", "sparse"] = "dense",
                  return_type :Literal["auto","BasePoints"] = "auto",
-                 **kwargs) -> Union[Sequence[Union[NodeWithScore,Document]],Sequence[dict]]:
+                 **kwargs) -> Union[Sequence[Union[NodeWithScore,Document,dict]]]:
         """
         Finding relevant contexts from initial question.
 
@@ -165,8 +172,11 @@ class MilvusVectorStore(BaseVectorStore):
         :type partition_names: Optional[list[str]]
         :param limit: Number of resulted responses.
         :type limit: int
-        :param return_type: Return object
-        :return: Union[Sequence[NodeWithScore],Sequence[dict]]
+        :param mode: Type of ANN algorithms for searching (dense/sparse)
+        :type mode: Literal["dense", "sparse"]
+        :param return_type: Desired object for return (BasePoint or auto)
+        :param kwargs: Additional params
+        :return: Union[Sequence[Union[NodeWithScore,Document,dict]]]
         """
         # Default partition
         if isinstance(partition_names,str) : partition_names = [partition_names]
@@ -240,7 +250,8 @@ class MilvusVectorStore(BaseVectorStore):
 
     def collection_info(self):
         """
-        Return collection info
+        Describe collection information
+        :return:
         """
 
         # Check collection exist
@@ -249,7 +260,11 @@ class MilvusVectorStore(BaseVectorStore):
         # Return information
         return self.describe_collection(collection_name=self._collection_name)
 
-    def list_partition(self):
+    def list_partition(self) -> List[str]:
+        """
+        Return list of partition of defined collection
+        :return:
+        """
         # Check collection exist
         if not self.has_collection(self._collection_name):
             raise Exception(f"Collection {self._collection_name} is not exist!")
@@ -259,7 +274,13 @@ class MilvusVectorStore(BaseVectorStore):
 
     def __verify_collection_dimension(self,
                                       collection_name :str,
-                                      embedding_dimension :int):
+                                      embedding_dimension :int) -> None:
+        """
+        Verify config of dense representation index
+        :param collection_name: The collection name
+        :param embedding_dimension: Embedding dimension
+        :return: None
+        """
         # Check partition stats
         stats = self.describe_collection(collection_name = collection_name)
 
