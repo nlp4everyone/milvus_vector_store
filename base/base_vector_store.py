@@ -28,7 +28,7 @@ class BaseVectorStore(MilvusClient):
                  password: str = "",
                  db_name: str = "",
                  token: str = "",
-                 search_metrics: Literal["COSINE", "L2", "IP", "HAMMING", "JACCARD"] = "COSINE",
+                 dense_search_metrics: Literal["COSINE", "L2", "IP", "HAMMING", "JACCARD"] = "COSINE",
                  index_algo :Literal["FLAT","IVF_FLAT","IVF_SQ8","IVF_PQ","HNSW","SCANN"] = "IVF_FLAT",
                  dense_datatype :Literal["FLOAT_VECTOR","FLOAT16_VECTOR","BFLOAT16_VECTOR"] = "FLOAT_VECTOR",
                  **kwargs):
@@ -41,7 +41,7 @@ class BaseVectorStore(MilvusClient):
 
         # Define params
         self._collection_name = collection_name
-        self._search_metrics = search_metrics
+        self._dense_search_metrics = dense_search_metrics
         self._index_algo = index_algo
         self._dense_datatype = dense_datatype
         self._uri = uri
@@ -78,32 +78,73 @@ class BaseVectorStore(MilvusClient):
         return embedding_model.embed_documents(texts = texts)
 
     @staticmethod
+    def _embed_query(query: str,
+                     embedding_model: Union[BaseEmbedding, Embeddings]) -> Embedding:
+        """
+        Get representation vector from input query
+
+        Args:
+            query (str): The query text input
+            embedding_model (BaseEmbedding/Embeddings): The text embedding model
+
+        Returns:
+             Return list of Embedding
+        """
+        # Get query representation from Llama Index BaseEmbedding model
+        if isinstance(embedding_model, BaseEmbedding):
+            return embedding_model.get_query_embedding(query = query)
+        # Get query representation from Langchain Embeddings model
+        return embedding_model.embed_query(text = query)
+
+    @staticmethod
     def _sparse_embed_texts(texts: list[str],
                             sparse_embedding_model: SparseTextEmbedding,
                             batch_size :int = 32,
                             parallel :int = 1) -> List[SparseEmbedding]:
         """
-        Return embedding from documents
+        Get sparse text representation of incoming texts.
 
         Args:
             texts (list[str]): List of input text
-            embedding_model (BaseEmbedding/Embeddings): The text embedding model
+            sparse_embedding_model (BaseEmbedding/Embeddings): The text embedding model
             batch_size (int): The desired batch size
-            num_workers (int): The desired num workers
-            show_progress (bool): Indicate show progress or not
+            parallel (int): The number of parallel processing
 
         Returns:
-             Return list of Embedding
+             Sparse Embedding
         """
         # Splade Sparse Embedding encode
         if isinstance(sparse_embedding_model, SparseTextEmbedding):
             sparse_embeddings = sparse_embedding_model.embed(documents = texts,
-                                                batch_size = batch_size,
-                                                parallel = parallel)
+                                                             batch_size = batch_size,
+                                                             parallel = parallel)
             return list(sparse_embeddings)
         # Doesnt support
         raise NotImplementedError("This version only support FastEmbed SparseTextEmbedding!")
 
+    @staticmethod
+    def _sparse_embed_query(query: str,
+                            sparse_embedding_model: SparseTextEmbedding):
+        """
+        Get sparse text representation of incoming query.
+
+        Args:
+            texts (list[str]): List of input text
+            sparse_embedding_model (BaseEmbedding/Embeddings): The text embedding model
+            batch_size (int): The desired batch size
+            parallel (int): The number of parallel processing
+
+        Returns:
+             Sparse Embedding
+        """
+        # Convert string to list of string
+        if isinstance(query,str): query = [query]
+
+        # Splade Sparse Embedding encode
+        if isinstance(sparse_embedding_model, SparseTextEmbedding):
+            return sparse_embedding_model.query_embed(query = query)
+        # Doesnt support
+        raise NotImplementedError("This version only support FastEmbed SparseTextEmbedding!")
 
     @staticmethod
     def _convert_upsert_data(documents: Sequence[Union[BaseNode,Document]]) -> list[dict]:
@@ -135,9 +176,8 @@ class BaseVectorStore(MilvusClient):
         else:
             # Langchain Document verify
             documents = [DocumentField.parse_obj(document.dict()).dict() for document in documents]
-            # Add id_
-            for i in range(len(documents)):
-                documents[i].update({"id_": str(uuid.uuid4())})
+            # Add id_ value to dict
+            for i in range(len(documents)): documents[i].update({default_keys[0]: str(uuid.uuid4())})
             return documents
 
     @staticmethod
@@ -164,7 +204,8 @@ class BaseVectorStore(MilvusClient):
         # Define text nodes
         text_nodes = [TextNode.from_dict(result) for result in results]
         # Return NodeWithScore
-        return [NodeWithScore(node=text_nodes[i], score=responses[i]["distance"]) for i in range(len(responses))]
+        return [NodeWithScore(node = text_nodes[i],
+                              score = responses[i]["distance"]) for i in range(len(responses))]
 
     @staticmethod
     def _convert_response_to_document(responses: List[dict],
@@ -299,7 +340,7 @@ class BaseVectorStore(MilvusClient):
 
         if enable_sparse:
             # Add sparse field
-            schema.add_field(field_name = default_keys[2], datatype=DataType.SPARSE_FLOAT_VECTOR)
+            schema.add_field(field_name = default_keys[2], datatype = DataType.SPARSE_FLOAT_VECTOR)
         return schema
 
     def _setup_collection_index(self,
@@ -326,9 +367,11 @@ class BaseVectorStore(MilvusClient):
         # Default sparse params
         if sparse_params is None: sparse_params = {"drop_ratio_build": 0.2}
 
-        # Add indexes
+        # Add id key
         index_params.add_index(field_name = default_keys[0])
+        # Add dense key
         index_params.add_index(field_name = default_keys[1],
+                               index_name = "dense_index",
                                index_type = index_algo,
                                metric_type = search_metric,
                                params = params)
@@ -337,7 +380,7 @@ class BaseVectorStore(MilvusClient):
         if enable_sparse:
             index_params.add_index(
                 field_name = default_keys[2],
-                index_name = sparse_index_type.lower(),
+                index_name = "sparse_index",
                 index_type = sparse_index_type,
                 metric_type = "IP", # Only Inner Product is used to measure the similarity between 2 sparse vectors.
                 params = sparse_params,
@@ -362,7 +405,7 @@ class BaseVectorStore(MilvusClient):
 
         # Define index
         index_params = self._setup_collection_index(index_algo = self._index_algo,
-                                                    search_metric = self._search_metrics,
+                                                    search_metric = self._dense_search_metrics,
                                                     enable_sparse = enable_sparse)
         # Collection for LlamaIndex payloads
         self.create_collection(collection_name = self._collection_name,

@@ -27,7 +27,7 @@ class MilvusVectorStore(BaseVectorStore):
                  password :str = "",
                  db_name :str = "",
                  token :str = "",
-                 search_metrics :Literal["COSINE","L2","IP","HAMMING","JACCARD"] = "COSINE",
+                 dense_search_metrics :Literal["COSINE","L2","IP","HAMMING","JACCARD"] = "COSINE",
                  index_algo: Literal["FLAT", "IVF_FLAT", "IVF_SQ8", "IVF_PQ", "HNSW", "SCANN"] = "IVF_FLAT",
                  **kwargs) -> None:
 
@@ -53,7 +53,7 @@ class MilvusVectorStore(BaseVectorStore):
                          password = password,
                          db_name = db_name,
                          token = token,
-                         search_metrics = search_metrics,
+                         dense_search_metrics = dense_search_metrics,
                          index_algo = index_algo,
                          **kwargs)
         # Dense model
@@ -155,6 +155,7 @@ class MilvusVectorStore(BaseVectorStore):
                  query :str,
                  partition_names: Union[str, List[str]],
                  limit :int = 3,
+                 mode: Literal["dense", "sparse"] = "dense",
                  return_type :Literal["auto","BasePoints"] = "auto",
                  **kwargs) -> Union[Sequence[Union[NodeWithScore,Document]],Sequence[dict]]:
         """
@@ -183,33 +184,53 @@ class MilvusVectorStore(BaseVectorStore):
             wrong_partition = ",".join(partition_names)
             raise ValueError(f"Partitions: {wrong_partition} not existed!")
 
-        # Get query representation from Llama Index BaseEmbedding model
-        if isinstance(self._dense_embedding_model, BaseEmbedding):
-            query_embedding = self._dense_embedding_model.get_query_embedding(query = query)
-        else:
-            # Get query representation from Langchain Embeddings model
-            query_embedding = self._dense_embedding_model.embed_query(text = query)
-
-        # Verify embedding size
-        self.__verify_collection_dimension(collection_name = self._collection_name,
-                                           embedding_dimension = len(query_embedding))
-
         # Get collection info
         collection_info = self.collection_info()
+        # Get field name from collection
         collection_fields = [field["name"] for field in collection_info["fields"]]
+
+        # Search metrics
+        search_metrics = {"metric_type": self._dense_search_metrics}
+        # Search with dense embedding
+        if mode == "dense":
+            # Get dense query embedding
+            query_embedding = self._embed_query(query = query,
+                                                embedding_model = self._dense_embedding_model)
+            # Verify embedding size
+            self.__verify_collection_dimension(collection_name = self._collection_name,
+                                               embedding_dimension = len(query_embedding))
+            # Dense anns fields
+            anns_field = default_keys[1]
+            # Add outside dimension
+            query_embedding = [query_embedding]
+        else:
+            # Sparse embedding case
+            if default_keys[2] not in collection_fields:
+                raise Exception(f"Collection: {self._collection_name} not supports sparse embedding")
+
+            # Get sparse query embedding
+            query_embedding = self._sparse_embed_query(query = query,
+                                                       sparse_embedding_model = self._sparse_embedding_model)
+            # Convert under dict type
+            query_embedding = [embedding.as_dict() for embedding in query_embedding]
+
+            # Sparse anns fields
+            anns_field = default_keys[2]
+            # Change metric type for sparse searching
+            search_metrics.update({"metric_type": "IP"})
 
         # Get the retrieved text
         results = self.search(collection_name = self._collection_name,
                               partition_names = partition_names,
-                              data = [query_embedding],
+                              anns_field = anns_field,
+                              data = query_embedding,
                               limit = limit,
                               output_fields = collection_fields,
-                              search_params = {"metric_type": self._search_metrics},
+                              search_params = search_metrics,
                               **kwargs)
 
         # Convert to list
         results = results[0]
-
         # Return
         if return_type == "BasePoints":
             # Default
