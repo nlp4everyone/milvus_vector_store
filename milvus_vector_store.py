@@ -6,7 +6,8 @@ from langchain_core.documents.base import Document
 from llama_index.core.embeddings import BaseEmbedding
 from langchain_core.embeddings import Embeddings
 # Sparse Embedding
-from fastembed import SparseTextEmbedding, SparseEmbedding
+from fastembed import SparseTextEmbedding
+from milvus_model.sparse.splade import SpladeEmbeddingFunction
 # Base vector store
 from .base import BaseVectorStore, default_keys
 
@@ -20,7 +21,7 @@ _DEFAULT_UPLOAD_BATCH_SIZE = 16
 class MilvusVectorStore(BaseVectorStore):
     def __init__(self,
                  dense_embedding_model: Union[BaseEmbedding,Embeddings],
-                 sparse_embedding_model: Optional[SparseTextEmbedding] = None,
+                 sparse_embedding_model: Optional[Union[SparseTextEmbedding,SpladeEmbeddingFunction]] = None,
                  collection_name: str = "milvus_vector_store",
                  uri: str = "http://localhost:19530",
                  user :str = "",
@@ -116,10 +117,7 @@ class MilvusVectorStore(BaseVectorStore):
             sparse_embeddings = self._sparse_embed_texts(texts = contents,
                                                          sparse_embedding_model = self._sparse_embedding_model)
             # Add sparse embedding to dictionary
-            if isinstance(sparse_embeddings[0],SparseEmbedding):
-                for i in range(len(nodes)): nodes[i].update({default_keys[2]: sparse_embeddings[i].as_dict()})
-            else:
-                raise NotImplementedError("This version only support FastEmbed for sparse embedding")
+            for i in range(len(nodes)): nodes[i].update({default_keys[2]: sparse_embeddings[i]})
 
         # Get dimension nums
         dimension_nums = len(nodes[0][default_keys[1]])
@@ -211,8 +209,6 @@ class MilvusVectorStore(BaseVectorStore):
             # Get sparse query embedding
             query_embedding = self._sparse_embed_query(query = query,
                                                        sparse_embedding_model = self._sparse_embedding_model)
-            # Convert under dict type
-            query_embedding = [embedding.as_dict() for embedding in query_embedding]
 
             # Sparse anns fields
             anns_field = default_keys[2]

@@ -1,5 +1,4 @@
 # Typing
-import uuid
 from typing import  List, Sequence, Literal, Optional, Union
 from llama_index.core.schema import BaseNode, NodeWithScore, TextNode
 from langchain_core.documents.base import Document
@@ -13,7 +12,10 @@ from pymilvus import (CollectionSchema,
                       DataType,
                       MilvusClient)
 # Sparse embedding
-from fastembed import SparseTextEmbedding, SparseEmbedding
+from fastembed import SparseTextEmbedding
+from milvus_model.sparse.splade import SpladeEmbeddingFunction
+# Import
+import uuid, scipy
 
 # List all default keys
 default_keys = list(FundamentalField.model_fields.keys())
@@ -98,9 +100,9 @@ class BaseVectorStore(MilvusClient):
 
     @staticmethod
     def _sparse_embed_texts(texts: list[str],
-                            sparse_embedding_model: SparseTextEmbedding,
+                            sparse_embedding_model: Union[SparseTextEmbedding, SpladeEmbeddingFunction],
                             batch_size :int = 32,
-                            parallel :int = 1) -> List[SparseEmbedding]:
+                            parallel :int = 1) -> List[dict]:
         """
         Get sparse text representation of incoming texts.
 
@@ -118,13 +120,18 @@ class BaseVectorStore(MilvusClient):
             sparse_embeddings = sparse_embedding_model.embed(documents = texts,
                                                              batch_size = batch_size,
                                                              parallel = parallel)
-            return list(sparse_embeddings)
+            # Return as object
+            return [embedding.as_dict() for embedding in list(sparse_embeddings)]
+        elif isinstance(sparse_embedding_model,SpladeEmbeddingFunction):
+            # Splade Embedding
+            sparse_embeddings = sparse_embedding_model.encode_documents(documents = texts)
+            return [BaseVectorStore._convert_csr_array_to_dict(embedding) for embedding in sparse_embeddings]
         # Doesnt support
         raise NotImplementedError("This version only support FastEmbed SparseTextEmbedding!")
 
     @staticmethod
     def _sparse_embed_query(query: str,
-                            sparse_embedding_model: SparseTextEmbedding):
+                            sparse_embedding_model: SparseTextEmbedding) -> List[dict]:
         """
         Get sparse text representation of incoming query.
 
@@ -140,11 +147,19 @@ class BaseVectorStore(MilvusClient):
         # Convert string to list of string
         if isinstance(query,str): query = [query]
 
-        # Splade Sparse Embedding encode
+        # Fastembed Sparse Embedding encode
         if isinstance(sparse_embedding_model, SparseTextEmbedding):
-            return sparse_embedding_model.query_embed(query = query)
+            # Get embedding
+            sparse_embeddings = sparse_embedding_model.query_embed(query = query)
+            # Normalize
+            return  [embedding.as_dict() for embedding in list(sparse_embeddings)]
+        elif isinstance(sparse_embedding_model, SpladeEmbeddingFunction):
+            # Milvus Sparse embedding
+            sparse_embeddings = sparse_embedding_model.encode_queries(queries = query)
+            # Normalize
+            return [BaseVectorStore._convert_csr_array_to_dict(embedding) for embedding in sparse_embeddings]
         # Doesnt support
-        raise NotImplementedError("This version only support FastEmbed SparseTextEmbedding!")
+        raise NotImplementedError("Sparse embedding currently support Milvus/Fastembed!")
 
     @staticmethod
     def _convert_upsert_data(documents: Sequence[Union[BaseNode,Document]]) -> list[dict]:
@@ -230,6 +245,10 @@ class BaseVectorStore(MilvusClient):
 
         # Return Document
         return [Document.parse_obj(result) for result in results]
+
+    @staticmethod
+    def _convert_csr_array_to_dict(csr_array :scipy.sparse.csr_array) -> dict:
+        return {indice:value for (indice, value) in zip(csr_array.indices,csr_array.data)}
 
     def _setup_collection_schema(self,
                                  document_type: str,
