@@ -76,20 +76,22 @@ class BaseVectorStore(MilvusClient):
         return embedding_model.embed_documents(texts = texts)
 
     @staticmethod
-    def _embed_query(query: str,
-                     embedding_model: Union[BaseEmbedding, Embeddings]) -> Embedding:
+    def _embed_query(queries: Union[str,List[str]],
+                     embedding_model: Union[BaseEmbedding, Embeddings]) -> List[Embedding]:
         """
         Get dense representation vector of input query.
         :param query: The query text input
         :param embedding_model: The dense embedding model
         :return:
         """
+        # Convert string to list of string
+        if isinstance(queries,str): queries = [queries]
 
         # Get query representation from Llama Index BaseEmbedding model
         if isinstance(embedding_model, BaseEmbedding):
-            return embedding_model.get_query_embedding(query = query)
+            return [embedding_model.get_query_embedding(query = query) for query in queries]
         # Get query representation from Langchain Embeddings model
-        return embedding_model.embed_query(text = query)
+        return [embedding_model.embed_query(text = query) for query in queries]
 
     @staticmethod
     def _sparse_embed_texts(texts: list[str],
@@ -191,7 +193,8 @@ class BaseVectorStore(MilvusClient):
             temp = dict(response['entity'])
             # temp.update({"score": response['distance']})
             # Remove embedding
-            if remove_embedding: temp.update({default_keys[1]:None})
+            if remove_embedding: temp.update({default_keys[1]:None,
+                                              default_keys[2]:None})
             results.append(temp)
 
         # Define text nodes
@@ -216,7 +219,8 @@ class BaseVectorStore(MilvusClient):
             temp = dict(response['entity'])
             # temp.update({"score": response['distance']})
             # Remove embedding
-            if remove_embedding: temp.update({default_keys[1]:None})
+            if remove_embedding: temp.update({default_keys[1]:None,
+                                              default_keys[2]:None})
             results.append(temp)
 
         # Return Document

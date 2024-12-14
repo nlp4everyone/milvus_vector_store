@@ -10,6 +10,10 @@ from fastembed import SparseTextEmbedding
 from milvus_model.sparse.splade import SpladeEmbeddingFunction
 # Base vector store
 from .base import BaseVectorStore, default_keys
+# Milvus components
+from pymilvus import (AnnSearchRequest,
+                      WeightedRanker,
+                      RRFRanker)
 
 # DataType
 Num = Union[int, float]
@@ -127,7 +131,7 @@ class MilvusVectorStore(BaseVectorStore):
             for i in range(len(nodes)): nodes[i].update({default_keys[2]: sparse_embeddings[i]})
 
         # Get dimension nums
-        dimension_nums = len(nodes[0][default_keys[1]])
+        dimension_nums = len(nodes[0][default_keys[1]][0])
         # Check collection existence
         if not self.has_collection(collection_name = self._collection_name):
             # When enable sparse
@@ -143,6 +147,7 @@ class MilvusVectorStore(BaseVectorStore):
             # Create partition
             self._create_partition(partition_name = partition_name)
         else:
+            # Verify dense dimension of collection
             self.__verify_collection_dimension(collection_name = self._collection_name,
                                                embedding_dimension = dimension_nums)
 
@@ -159,7 +164,7 @@ class MilvusVectorStore(BaseVectorStore):
     def retrieve(self,
                  query :str,
                  partition_names: Union[str, List[str]],
-                 limit :int = 3,
+                 similarity_top_k :int = 3,
                  mode: Literal["dense", "sparse"] = "dense",
                  return_type :Literal["auto","BasePoints"] = "auto",
                  **kwargs) -> Union[Sequence[Union[NodeWithScore,Document,dict]]]:
@@ -170,8 +175,8 @@ class MilvusVectorStore(BaseVectorStore):
         :type query: str
         :param partition_names: Choose partition for retrieving. Default is current partition.
         :type partition_names: Optional[list[str]]
-        :param limit: Number of resulted responses.
-        :type limit: int
+        :param similarity_top_k: Number of resulted responses.
+        :type similarity_top_k: int
         :param mode: Type of ANN algorithms for searching (dense/sparse)
         :type mode: Literal["dense", "sparse"]
         :param return_type: Desired object for return (BasePoint or auto)
@@ -202,15 +207,13 @@ class MilvusVectorStore(BaseVectorStore):
         # Search with dense embedding
         if mode == "dense":
             # Get dense query embedding
-            query_embedding = self._embed_query(query = query,
+            query_embedding = self._embed_query(queries = query,
                                                 embedding_model = self._dense_embedding_model)
             # Verify embedding size
             self.__verify_collection_dimension(collection_name = self._collection_name,
-                                               embedding_dimension = len(query_embedding))
+                                               embedding_dimension = len(query_embedding[0]))
             # Dense anns fields
             anns_field = default_keys[1]
-            # Add outside dimension
-            query_embedding = [query_embedding]
         else:
             # Sparse embedding case
             if default_keys[2] not in collection_fields:
@@ -230,7 +233,7 @@ class MilvusVectorStore(BaseVectorStore):
                               partition_names = partition_names,
                               anns_field = anns_field,
                               data = query_embedding,
-                              limit = limit,
+                              limit = similarity_top_k,
                               output_fields = collection_fields,
                               search_params = search_metrics,
                               **kwargs)
@@ -239,6 +242,109 @@ class MilvusVectorStore(BaseVectorStore):
         results = results[0]
         # Return
         if return_type == "BasePoints":
+            # Remove embedding
+            for i in range(len(results)):
+                results[i]["entity"].update({default_keys[1]: None,
+                                             default_keys[2]: None})
+            # Default
+            return results
+        # Auto mode
+        # Document case
+        if results[0]["entity"].get("page_content"):
+            return self._convert_response_to_document(responses = results)
+        # NodeWithScore case
+        return self._convert_response_to_node_with_score(responses = results)
+
+    def hybrid_query(self,
+                     query: str,
+                     ranker :Union[RRFRanker,WeightedRanker],
+                     partition_names: Union[str, List[str]],
+                     dense_similarity_top_k: int = 3,
+                     sparse_similarity_top_k: int = 3,
+                     rerank_similarity_top_k :int = 3,
+                     dense_params :Optional[dict] = None,
+                     sparse_params: Optional[dict] = None,
+                     return_type: Literal["auto", "BasePoints"] = "auto",
+                     **kwargs) -> Union[Sequence[Union[NodeWithScore, Document, dict]]]:
+        """
+        Perform hybrid search over collection with partition names
+        :param query: A query for searching
+        :param ranker: Reranking strategy options. Only available with Milvus Reranker (WeightedRanker,RRFRanker)
+        :param partition_names: Choose partition for retrieving. Default is current partition.
+        :param dense_similarity_top_k: Number of dense responses from searching.
+        :param sparse_similarity_top_k: Number of sparse responses from searching.
+        :param rerank_similarity_top_k: Number of resulted responses after reranking.
+        :param dense_params: Optional parameter for dense retrieval
+        :param sparse_params: Optional parameter for sparse retrieval
+        :param return_type: return_type: Desired object for return (BasePoint or auto)
+        :param kwargs: Additional params
+        :return: Union[Sequence[Union[NodeWithScore,Document,dict]]]
+        """
+        # Check embedding model
+        if self._dense_embedding_model is None:
+            raise Exception("Dense embedding model is empty!")
+
+        # Check sparse embedding model
+        if self._sparse_embedding_model is None:
+            raise Exception("Sparse embedding model is empty!")
+
+        # Get collection info
+        collection_info = self.collection_info()
+        # Get field name from collection
+        collection_fields = [field["name"] for field in collection_info["fields"]]
+
+        # Check collection config for vector
+        if default_keys[1] not in collection_fields:
+            raise ValueError("Please config dense embedding first!")
+        if default_keys[2] not in collection_fields:
+            raise ValueError("Please config sparse embedding first!")
+
+        # Convert string to list string
+        if isinstance(partition_names, str): partition_names = [partition_names]
+
+        # Get dense query embedding
+        query_dense_vector = self._embed_query(query,
+                                               embedding_model = self._dense_embedding_model)
+        # Get sparse query embedding
+        query_sparse_vector = self._sparse_embed_query(query = query,
+                                                       sparse_embedding_model = self._sparse_embedding_model)
+
+        # Define search params
+        dense_search_param = {
+            "data": query_dense_vector,
+            "anns_field": default_keys[1],
+            "param": {
+                "metric_type": self._dense_search_metrics,
+                "params": {"nprobe": 10} if dense_params is None else dense_params
+            },
+            "limit": dense_similarity_top_k
+        }
+        sparse_search_param = {
+            "data": query_sparse_vector,
+            "anns_field": default_keys[2],
+            "param": {
+                "metric_type": "IP",
+                "params": {"drop_ratio_build": 0.2} if sparse_params is None else sparse_params
+            },
+            "limit": sparse_similarity_top_k
+        }
+
+        # Get result
+        results = self.hybrid_search(collection_name = self._collection_name,
+                                     partition_names = partition_names,
+                                     reqs = [AnnSearchRequest(**dense_search_param),AnnSearchRequest(**sparse_search_param)],
+                                     ranker = ranker,
+                                     limit = rerank_similarity_top_k,
+                                     output_fields = collection_fields,
+                                     **kwargs)
+        # Convert to list
+        results = results[0]
+        # Return
+        if return_type == "BasePoints":
+            # Remove embedding
+            for i in range(len(results)):
+                results[i]["entity"].update({default_keys[1]: None,
+                                             default_keys[2]: None})
             # Default
             return results
         # Auto mode
