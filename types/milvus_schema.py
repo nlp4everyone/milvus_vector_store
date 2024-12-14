@@ -2,7 +2,8 @@ from pydantic import BaseModel
 from typing import (List,
                     Dict,
                     Any,
-                    Union)
+                    Union,
+                    Optional)
 
 class FundamentalField(BaseModel):
     id_ :str
@@ -17,8 +18,8 @@ class BaseNodeField(BaseModel):
     relationships :Dict
     text :str
     mimetype :str
-    start_char_idx :Union[int,None] = None
-    end_char_idx :Union[int,None] = None
+    start_char_idx :Optional[int] = None
+    end_char_idx :Optional[int] = None
     text_template :str
     metadata_template :str
     metadata_seperator :str

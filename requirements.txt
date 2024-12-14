@@ -1,6 +1,6 @@
 llama-index-core==0.11.23
 langchain-core==0.3.18
-pymilvus==2.4.5
+pymilvus==2.5.0
 fastembed==0.4.2
 milvus-model==0.2.10
 torch==2.5.1
