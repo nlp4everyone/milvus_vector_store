@@ -162,21 +162,24 @@ class MilvusVectorStore(BaseVectorStore):
         return res['insert_count']
 
     def retrieve(self,
-                 query :str,
+                 query :Union[str,List[str]],
                  partition_names: Union[str, List[str]],
                  similarity_top_k :int = 3,
+                 search_filter :str = "",
                  mode: Literal["dense", "sparse"] = "dense",
                  return_type :Literal["auto","BasePoints"] = "auto",
                  **kwargs) -> Union[Sequence[Union[NodeWithScore,Document,dict]]]:
         """
         Finding relevant contexts from initial question.
 
-        :param query: A query for searching
-        :type query: str
+        :param query: A query or list of query for searching
+        :type query: Union[str,List[str]]
         :param partition_names: Choose partition for retrieving. Default is current partition.
         :type partition_names: Optional[list[str]]
         :param similarity_top_k: Number of resulted responses.
         :type similarity_top_k: int
+        :param search_filter: Conditional filter apply to search function
+        :type search_filter: str
         :param mode: Type of ANN algorithms for searching (dense/sparse)
         :type mode: Literal["dense", "sparse"]
         :param return_type: Desired object for return (BasePoint or auto)
@@ -233,30 +236,17 @@ class MilvusVectorStore(BaseVectorStore):
                               partition_names = partition_names,
                               anns_field = anns_field,
                               data = query_embedding,
+                              filter = search_filter,
                               limit = similarity_top_k,
                               output_fields = collection_fields,
                               search_params = search_metrics,
                               **kwargs)
 
-        # Convert to list
-        results = results[0]
         # Return
-        if return_type == "BasePoints":
-            # Remove embedding
-            for i in range(len(results)):
-                results[i]["entity"].update({default_keys[1]: None,
-                                             default_keys[2]: None})
-            # Default
-            return results
-        # Auto mode
-        # Document case
-        if results[0]["entity"].get("page_content"):
-            return self._convert_response_to_document(responses = results)
-        # NodeWithScore case
-        return self._convert_response_to_node_with_score(responses = results)
+        return self.__convert_retrieval_nodes(results, return_type)
 
     def hybrid_query(self,
-                     query: str,
+                     query: Union[str,List[str]],
                      ranker :Union[RRFRanker,WeightedRanker],
                      partition_names: Union[str, List[str]],
                      dense_similarity_top_k: int = 3,
@@ -268,7 +258,7 @@ class MilvusVectorStore(BaseVectorStore):
                      **kwargs) -> Union[Sequence[Union[NodeWithScore, Document, dict]]]:
         """
         Perform hybrid search over collection with partition names
-        :param query: A query for searching
+        :param query: A query or list of query for searching
         :param ranker: Reranking strategy options. Only available with Milvus Reranker (WeightedRanker,RRFRanker)
         :param partition_names: Choose partition for retrieving. Default is current partition.
         :param dense_similarity_top_k: Number of dense responses from searching.
@@ -337,22 +327,8 @@ class MilvusVectorStore(BaseVectorStore):
                                      limit = rerank_similarity_top_k,
                                      output_fields = collection_fields,
                                      **kwargs)
-        # Convert to list
-        results = results[0]
         # Return
-        if return_type == "BasePoints":
-            # Remove embedding
-            for i in range(len(results)):
-                results[i]["entity"].update({default_keys[1]: None,
-                                             default_keys[2]: None})
-            # Default
-            return results
-        # Auto mode
-        # Document case
-        if results[0]["entity"].get("page_content"):
-            return self._convert_response_to_document(responses = results)
-        # NodeWithScore case
-        return self._convert_response_to_node_with_score(responses = results)
+        return self.__convert_retrieval_nodes(results, return_type)
 
     def collection_info(self):
         """
@@ -377,6 +353,42 @@ class MilvusVectorStore(BaseVectorStore):
 
         # Return information
         return self.list_partitions(collection_name = self._collection_name)
+
+    def __convert_retrieval_nodes(self,
+                                  results,
+                                  return_type: Literal["auto", "BasePoints"] = "auto"):
+        """
+        Normalize node with specific type
+        :param results: Result from searching nodes
+        :param return_type: Desired result. Default is auto
+        :return:
+        """
+        results = list(results)
+        # Check len
+        if len(results) == 0:
+            # Return empty list
+            return []
+        # Convert result to list
+        # Desired output
+        for result in results:
+            # Remove embedding
+            for i in range(len(result)):
+                result[i]["entity"].update({default_keys[1]: None,
+                                            default_keys[2]: None})
+        # Return BasePoint
+        if return_type == "BasePoints":
+            return results
+
+        final_output = []
+        # Auto mode
+        for result in results:
+            # Auto mode
+            if result[0]["entity"].get("page_content"):
+                # Document case
+                final_output.append(self._convert_response_to_document(responses = result))
+            else:
+                final_output.append(self._convert_response_to_node_with_score(responses = result))
+        return final_output
 
     def __verify_collection_dimension(self,
                                       collection_name :str,

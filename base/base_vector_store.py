@@ -121,7 +121,7 @@ class BaseVectorStore(MilvusClient):
         raise NotImplementedError("This version only support FastEmbed SparseTextEmbedding!")
 
     @staticmethod
-    def _sparse_embed_query(query: str,
+    def _sparse_embed_query(query: Union[str,List[str]],
                             sparse_embedding_model: SparseTextEmbedding) -> List[dict]:
         """
         Get sparse representation of incoming query.
