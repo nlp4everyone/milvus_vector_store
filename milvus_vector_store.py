@@ -79,7 +79,8 @@ class MilvusVectorStore(BaseVectorStore):
                          partition_name: str,
                          embedded_batch_size: int = 16,
                          embedded_num_workers: int = 4,
-                         **kwargs) -> int:
+                         uploading_batch_size:int = 4,
+                         **kwargs):
         """
         Insert document to a specified partition of collection.
 
@@ -131,7 +132,8 @@ class MilvusVectorStore(BaseVectorStore):
             for i in range(len(nodes)): nodes[i].update({default_keys[2]: sparse_embeddings[i]})
 
         # Get dimension nums
-        dimension_nums = len(nodes[0][default_keys[1]][0])
+        dimension_nums = len(nodes[0][default_keys[1]])
+
         # Check collection existence
         if not self.has_collection(collection_name = self._collection_name):
             # When enable sparse
@@ -151,15 +153,13 @@ class MilvusVectorStore(BaseVectorStore):
             self.__verify_collection_dimension(collection_name = self._collection_name,
                                                embedding_dimension = dimension_nums)
 
-
-        # Insert to partition inside collection
-        res = self.insert(collection_name = self._collection_name,
-                          partition_name = partition_name,
-                          data = nodes,
-                          **kwargs)
-
-        # Return number of inserted items
-        return res['insert_count']
+        # Iterate over the data with batch
+        for i in range(0, len(nodes), uploading_batch_size):
+            # Insert to partition inside collection
+            res = self.insert(collection_name = self._collection_name,
+                              partition_name = partition_name,
+                              data = nodes[i:i + uploading_batch_size],
+                              **kwargs)
 
     def retrieve(self,
                  query :Union[str,List[str]],
