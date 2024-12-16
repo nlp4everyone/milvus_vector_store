@@ -22,6 +22,6 @@ pip install -r requirements.txt
 - [x] Sparse embedding intergration (FastEmbed) <mark>(12/12)</mark>, Milvus Sparse Embedding <mark>(13/12)</mark> Ollama Sparse Embdding (upcoming) .
 - [x] Hybrid search built-in function <mark>(14/12)</mark>.
 - [x] Batch retrieval, retrieval with filtering <mark>(14/12)</mark>.
-- [ ] Batch upsert data.
+- [x] Batch upsert data <mark>(16/12)</mark>.
 - [ ] Image retrieval supports.
 <br />
