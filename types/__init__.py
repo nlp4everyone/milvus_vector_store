@@ -1,3 +1,1 @@
-from .milvus_schema import (FundamentalField,
-                            DocumentField,
-                            BaseNodeField)
+from .milvus_schema import FundamentalField

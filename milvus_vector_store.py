@@ -75,10 +75,12 @@ class MilvusVectorStore(BaseVectorStore):
         self._sparse_embedding_model = sparse_embedding_model
 
     def insert_documents(self,
-                         documents :Sequence[Union[BaseNode,Document]],
+                         documents :List[Union[BaseNode,Document]],
                          partition_name: str,
-                         embedded_batch_size: int = 16,
-                         embedded_num_workers: int = 4,
+                         dense_batch_size: int = 16,
+                         dense_num_workers: int = 4,
+                         sparse_batch_size: int = 16,
+                         sparse_parralel: Optional[int] = None,
                          uploading_batch_size:int = 4,
                          **kwargs):
         """
@@ -88,10 +90,10 @@ class MilvusVectorStore(BaseVectorStore):
         :type documents: Sequence[BaseNode]
         :param partition_name: Name of partition for inserting data
         :type partition_name: str
-        :param embedded_batch_size: Batch size for embedding model. Default is 64.
-        :type embedded_batch_size: int
-        :param embedded_num_workers: Batch size for embedding model (Optional). Default is None.
-        :type embedded_num_workers: int
+        :param dense_batch_size: Batch size for embedding model. Default is 64.
+        :type dense_batch_size: int
+        :param dense_num_workers: Batch size for embedding model (Optional). Default is None.
+        :type dense_num_workers: int
         """
         # When document is empty
         if len(documents) == 0:
@@ -102,7 +104,7 @@ class MilvusVectorStore(BaseVectorStore):
             raise ValueError("Please import embedding model!")
 
         # Get document type
-        document_type = "Document"  if isinstance(documents[0], Document) else "BaseNode"
+        document_type = "BaseNode" if isinstance(documents[0],BaseNode) else "Document"
 
         # Convert BaseNode to Dict and remove redundant information
         nodes = self._convert_upsert_data(documents = documents)
@@ -118,8 +120,8 @@ class MilvusVectorStore(BaseVectorStore):
         # Get dense embeddings
         dense_embeddings = self._embed_texts(texts = contents,
                                              embedding_model = self._dense_embedding_model,
-                                             batch_size = embedded_batch_size,
-                                             num_workers = embedded_num_workers)
+                                             batch_size = dense_batch_size,
+                                             num_workers = dense_num_workers)
         # Update dense embedding to node
         for i in range(len(nodes)): nodes[i].update({default_keys[1]: dense_embeddings[i]})
 
@@ -127,7 +129,9 @@ class MilvusVectorStore(BaseVectorStore):
         if self._sparse_embedding_model is not None:
             # Embed sparse embedding
             sparse_embeddings = self._sparse_embed_texts(texts = contents,
-                                                         sparse_embedding_model = self._sparse_embedding_model)
+                                                         sparse_embedding_model = self._sparse_embedding_model,
+                                                         batch_size = sparse_batch_size,
+                                                         parallel = sparse_parralel)
             # Add sparse embedding to dictionary
             for i in range(len(nodes)): nodes[i].update({default_keys[2]: sparse_embeddings[i]})
 

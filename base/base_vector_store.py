@@ -4,9 +4,7 @@ from llama_index.core.schema import BaseNode, NodeWithScore, TextNode
 from langchain_core.documents.base import Document
 from llama_index.core.embeddings import BaseEmbedding
 from langchain_core.embeddings import Embeddings
-from ..types import (FundamentalField,
-                     BaseNodeField,
-                     DocumentField)
+from ..types import FundamentalField
 # Milvus components
 from pymilvus import (CollectionSchema,
                       DataType,
@@ -97,7 +95,7 @@ class BaseVectorStore(MilvusClient):
     def _sparse_embed_texts(texts: list[str],
                             sparse_embedding_model: Union[SparseTextEmbedding, SpladeEmbeddingFunction],
                             batch_size :int = 32,
-                            parallel :int = 1) -> List[dict]:
+                            parallel :Optional[int] = None) -> List[dict]:
         """
         Get sparse representation of incoming document contents.
         :param texts: List of input texts
@@ -148,7 +146,7 @@ class BaseVectorStore(MilvusClient):
         raise NotImplementedError("Sparse embedding currently support Milvus/Fastembed!")
 
     @staticmethod
-    def _convert_upsert_data(documents: Sequence[Union[BaseNode,Document]]) -> List[dict]:
+    def _convert_upsert_data(documents: List[Union[BaseNode,Document]]) -> List[dict]:
         """
         Construct the payload data from LlamaIndex document/node datatype
         :param documents: The list of LlamaIndex BaseNode objects
@@ -168,13 +166,19 @@ class BaseVectorStore(MilvusClient):
                 for key in documents[i].relationships.keys():
                     documents[i].relationships[key].metadata = {}
 
-            # Verify object
-            return [BaseNodeField.parse_obj(document.dict()).dict() for document in documents]
+            return [document.dict() for document in documents]
         else:
             # Langchain Document verify
-            documents = [DocumentField.parse_obj(document.dict()).dict() for document in documents]
+            documents = [document.dict() for document in documents]
             # Add id_ value to dict
-            for i in range(len(documents)): documents[i].update({default_keys[0]: str(uuid.uuid4())})
+            for i in range(len(documents)):
+                # Get id_
+                document_id = documents[i].get("id")
+                documents[i].update({default_keys[0]: document_id if document_id is not None else str(uuid.uuid4()),
+                                     default_keys[3]: documents[i].get("type")})
+                # Drop key
+                documents[i].pop("id")
+                documents[i].pop("type")
             return documents
 
     @staticmethod
@@ -274,81 +278,105 @@ class BaseVectorStore(MilvusClient):
         schema.add_field(field_name = default_keys[1],
                          datatype = dense_datatype,
                          dim = vector_dims)
+        if enable_sparse:
+            # Add sparse field
+            schema.add_field(field_name = default_keys[2],
+                             datatype = DataType.SPARSE_FLOAT_VECTOR)
 
+        # document type field
+        schema.add_field(field_name = default_keys[3],
+                         datatype = DataType.VARCHAR,
+                         max_length = 8)
         # Add optional keys
         if document_type == "BaseNode":
             # BaseNode fields
-            base_node_fields = list(BaseNodeField.model_fields.keys())
+            base_node_fields = list(TextNode.model_fields.keys())
 
             # Add fields
             # Metadata field
-            schema.add_field(field_name = base_node_fields[1],
+            schema.add_field(field_name = base_node_fields[2],
                              datatype = DataType.JSON)
             # excluded_embed_metadata_keys field
-            schema.add_field(field_name = base_node_fields[2],
-                             datatype = DataType.ARRAY,
-                             element_type = DataType.VARCHAR,
-                             max_capacity = 16,
-                             max_length = 64)
-
-            # excluded_llm_metadata_keys
             schema.add_field(field_name = base_node_fields[3],
                              datatype = DataType.ARRAY,
                              element_type = DataType.VARCHAR,
                              max_capacity = 16,
                              max_length = 64)
 
-            # relationships field
+            # excluded_llm_metadata_keys
             schema.add_field(field_name = base_node_fields[4],
+                             datatype = DataType.ARRAY,
+                             element_type = DataType.VARCHAR,
+                             max_capacity = 16,
+                             max_length = 64)
+
+            # relationships field
+            schema.add_field(field_name = base_node_fields[5],
                              datatype = DataType.JSON)
 
+            # metadata_template field
+            schema.add_field(field_name = base_node_fields[6],
+                             datatype = DataType.VARCHAR,
+                             max_length = 32)
+
+            # metadata_separator field
+            schema.add_field(field_name = base_node_fields[7],
+                             datatype = DataType.VARCHAR,
+                             max_length = 8)
             # text field
-            schema.add_field(field_name = base_node_fields[5],
+            schema.add_field(field_name = base_node_fields[8],
                              datatype = DataType.VARCHAR,
                              max_length = 16384)
 
             # mimetype field
-            schema.add_field(field_name = base_node_fields[6],
+            schema.add_field(field_name = base_node_fields[9],
                              datatype = DataType.VARCHAR,
                              max_length = 16)
 
             # start_char_idx field
-            schema.add_field(field_name = base_node_fields[7],
+            schema.add_field(field_name = base_node_fields[10],
                              datatype = DataType.INT64,
                              max_length = 8,
                              nullable = True)
             # end_char_idx
-            schema.add_field(field_name = base_node_fields[8],
+            schema.add_field(field_name = base_node_fields[11],
                              datatype = DataType.INT64,
                              max_length = 8,
                              nullable = True)
-            # text_template field
-            schema.add_field(field_name = base_node_fields[9],
-                             datatype = DataType.VARCHAR,
-                             max_length = 64)
-            # metadata_template field
-            schema.add_field(field_name = base_node_fields[10],
-                             datatype = DataType.VARCHAR,
-                             max_length = 32)
+
             # metadata_seperator field
-            schema.add_field(field_name = base_node_fields[11],
+            schema.add_field(field_name = base_node_fields[12],
                              datatype = DataType.VARCHAR,
                              max_length = 8)
-        else:
-            document_fields = list(DocumentField.model_fields.keys())
 
+            # text_template field
+            schema.add_field(field_name = base_node_fields[13],
+                             datatype = DataType.VARCHAR,
+                             max_length = 64)
+
+        elif document_type == "Document":
+            document_fields = list(Document.model_fields.keys())
             # Add fields
             # Metadata field
-            schema.add_field(field_name = document_fields[0],
+            schema.add_field(field_name = document_fields[1],
                              datatype = DataType.JSON)
             # page content field
-            schema.add_field(field_name = document_fields[1],
+            schema.add_field(field_name = document_fields[2],
                              datatype = DataType.VARCHAR,
                              max_length = 16384)
 
-        if enable_sparse:
-            # Add sparse field
-            schema.add_field(field_name = default_keys[2], datatype = DataType.SPARSE_FLOAT_VECTOR)
+        if document_type == "ImageNode":
+            schema.add_field(field_name = "image",
+                             datatype = DataType.VARCHAR,
+                             max_length = 64)
+            schema.add_field(field_name = "image_mimetype",
+                             datatype = DataType.VARCHAR,
+                             max_length = 64)
+            schema.add_field(field_name = "image_path",
+                             datatype = DataType.VARCHAR,
+                             max_length = 64)
+
+
         return schema
 
     def _setup_collection_index(self,
@@ -413,7 +441,6 @@ class BaseVectorStore(MilvusClient):
                                                vector_dims = dimension_nums,
                                                dense_datatype = self._dense_datatype,
                                                enable_sparse = enable_sparse)
-
         # Define index
         index_params = self._setup_collection_index(index_algo = self._index_algo,
                                                     dense_search_metric = self._dense_search_metrics,
