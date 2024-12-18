@@ -4,3 +4,4 @@ pymilvus==2.5.0
 fastembed==0.4.2
 milvus-model==0.2.10
 torch==2.5.1
+pillow==11.0.0

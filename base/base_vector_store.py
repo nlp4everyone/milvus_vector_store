@@ -1,6 +1,9 @@
 # Typing
 from typing import  List, Sequence, Literal, Optional, Union
-from llama_index.core.schema import BaseNode, NodeWithScore, TextNode
+from llama_index.core.schema import (BaseNode,
+                                     NodeWithScore,
+                                     TextNode,
+                                     ImageNode)
 from langchain_core.documents.base import Document
 from llama_index.core.embeddings import BaseEmbedding
 from langchain_core.embeddings import Embeddings
@@ -241,8 +244,8 @@ class BaseVectorStore(MilvusClient):
 
     def _setup_collection_schema(self,
                                  document_type: str,
+                                 vector_dims: int,
                                  dense_datatype :Literal["FLOAT_VECTOR","FLOAT16_VECTOR","BFLOAT16_VECTOR"] = "FLOAT_VECTOR",
-                                 vector_dims :int = 768,
                                  enable_sparse :bool = False) -> CollectionSchema:
         """
         Create collection schema
@@ -253,20 +256,14 @@ class BaseVectorStore(MilvusClient):
         :param enable_sparse: Enable the sparse schema
         :return: CollectionSchema
         """
-        # Define dense datatype
-        if dense_datatype == "FLOAT_VECTOR":
-            dense_datatype = DataType.FLOAT_VECTOR
-        elif dense_datatype == "FLOAT16_VECTOR":
-            dense_datatype = DataType.FLOAT16_VECTOR
-        elif dense_datatype == "BFLOAT16_VECTOR":
-            dense_datatype = DataType.BFLOAT16_VECTOR
-        else:
-            raise ValueError(f"Dense data type: {dense_datatype} is not compatible with dense vector field!")
+
 
         # Define schema
         schema = self.create_schema(
             auto_id = False
         )
+        # Get datatype
+        dense_datatype = self._get_datatype(dense_datatype)
 
         # Add default field
         # id_ field
@@ -286,9 +283,10 @@ class BaseVectorStore(MilvusClient):
         # document type field
         schema.add_field(field_name = default_keys[3],
                          datatype = DataType.VARCHAR,
-                         max_length = 8)
-        # Add optional keys
-        if document_type == "BaseNode":
+                         max_length = 16)
+
+        # For both BaseNode and ImageNode
+        if document_type.endswith("Node"):
             # BaseNode fields
             base_node_fields = list(TextNode.model_fields.keys())
 
@@ -364,19 +362,6 @@ class BaseVectorStore(MilvusClient):
             schema.add_field(field_name = document_fields[2],
                              datatype = DataType.VARCHAR,
                              max_length = 16384)
-
-        if document_type == "ImageNode":
-            schema.add_field(field_name = "image",
-                             datatype = DataType.VARCHAR,
-                             max_length = 64)
-            schema.add_field(field_name = "image_mimetype",
-                             datatype = DataType.VARCHAR,
-                             max_length = 64)
-            schema.add_field(field_name = "image_path",
-                             datatype = DataType.VARCHAR,
-                             max_length = 64)
-
-
         return schema
 
     def _setup_collection_index(self,
@@ -385,7 +370,8 @@ class BaseVectorStore(MilvusClient):
                                 params :Optional[dict] = None,
                                 enable_sparse :bool = False,
                                 sparse_index_type :Literal["SPARSE_INVERTED_INDEX","SPARSE_WAND"] = "SPARSE_INVERTED_INDEX",
-                                sparse_params :Optional[dict] = None):
+                                sparse_params :Optional[dict] = None,
+                                **kwargs):
         """
         Define collection index (Index params dictate how Milvus organizes your data)
         :param index_algo: Name of the algorithm used to arrange data in the specific field ( FLAT,IVF_FLAT,etc).
@@ -406,10 +392,11 @@ class BaseVectorStore(MilvusClient):
         if sparse_params is None: sparse_params = {"drop_ratio_build": 0.2}
 
         # Add id key
-        index_params.add_index(field_name = default_keys[0])
+        index_params.add_index(field_name = default_keys[0],
+                               index_name = "unique_id")
         # Add dense key
         index_params.add_index(field_name = default_keys[1],
-                               index_name = "dense_index",
+                               index_name = "dense_representation",
                                index_type = index_algo,
                                metric_type = dense_search_metric,
                                params = params)
@@ -418,7 +405,7 @@ class BaseVectorStore(MilvusClient):
         if enable_sparse:
             index_params.add_index(
                 field_name = default_keys[2],
-                index_name = "sparse_index",
+                index_name = "sparse_representation",
                 index_type = sparse_index_type,
                 metric_type = "IP", # Only Inner Product is used to measure the similarity between 2 sparse vectors.
                 params = sparse_params,
@@ -428,7 +415,8 @@ class BaseVectorStore(MilvusClient):
     def _create_collection(self,
                            document_type: str,
                            dimension_nums :int,
-                           enable_sparse :bool = False) -> dict:
+                           enable_sparse :bool = False,
+                           **kwargs) -> dict:
         """
         Create Milvus collection with defined setting
         :param document_type: Type of input document (BaseNode,Document)
@@ -470,6 +458,19 @@ class BaseVectorStore(MilvusClient):
                               partition_name = partition_name)
         # Return state
         return self.get_load_state(collection_name = self._collection_name)
+
+    @staticmethod
+    def _get_datatype(datatype :str) -> DataType:
+        # Define dense datatype
+        if datatype == "FLOAT_VECTOR":
+            datatype = DataType.FLOAT_VECTOR
+        elif datatype == "FLOAT16_VECTOR":
+            datatype = DataType.FLOAT16_VECTOR
+        elif datatype == "BFLOAT16_VECTOR":
+            datatype = DataType.BFLOAT16_VECTOR
+        else:
+            raise ValueError(f"Dense data type: {datatype} is not compatible with dense vector field!")
+        return datatype
 
     def retrieve(self,
                  query: str,
