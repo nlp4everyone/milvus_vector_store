@@ -1,1 +1,2 @@
 from .base_vector_store import BaseVectorStore, default_keys
+from .base_multimodal_embedding import BaseMultimodalEmbedding

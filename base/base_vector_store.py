@@ -1,13 +1,8 @@
 # Typing
 from typing import  List, Sequence, Literal, Optional, Union
-from llama_index.core.schema import (BaseNode,
-                                     NodeWithScore,
-                                     TextNode,
-                                     ImageNode)
-from langchain_core.documents.base import Document
+# Embedding
 from llama_index.core.embeddings import BaseEmbedding
 from langchain_core.embeddings import Embeddings
-from ..types import FundamentalField
 # Milvus components
 from pymilvus import (CollectionSchema,
                       DataType,
@@ -15,6 +10,12 @@ from pymilvus import (CollectionSchema,
 # Sparse embedding
 from fastembed import SparseTextEmbedding
 from milvus_model.sparse.splade import SpladeEmbeddingFunction
+# Component
+from ..types import FundamentalField
+from llama_index.core.schema import (BaseNode,
+                                     NodeWithScore,
+                                     TextNode)
+from langchain_core.documents.base import Document
 # Import
 import uuid, scipy
 
@@ -513,3 +514,40 @@ class BaseVectorStore(MilvusClient):
         """
         # Check collection exist
         raise NotImplementedError
+
+    def _verify_collection_dimension(self,
+                                     collection_name :str,
+                                     embedding_dimension :int) -> None:
+        """
+        Verify config of dense representation index
+        :param collection_name: The collection name
+        :param embedding_dimension: Embedding dimension
+        :return: None
+        """
+        # Check partition stats
+        stats = self.describe_collection(collection_name = collection_name)
+
+        # Embedding stats
+        collection_stats = dict(stats).get("fields")
+        if collection_stats is None:
+            raise ValueError("Fields not existed in collection")
+        # Stats
+        collection_stats = [stats for stats in collection_stats if dict(stats).get("name") == default_keys[1]]
+        if len(collection_stats) == 0:
+            raise ValueError("Empty embedding field!")
+
+        # Params
+        collection_params = dict(collection_stats[0]).get("params")
+        if collection_params is None:
+            raise ValueError("Empty params field!")
+        # Dims
+        collection_dims = dict(collection_params).get("dim")
+        if collection_dims is None:
+            raise ValueError("Empty dim field!")
+
+        # Check type
+        if not isinstance(collection_dims,int):
+            raise ValueError("Collection dims must be integer!")
+        # Check dims
+        if embedding_dimension != collection_dims:
+            raise ValueError(f"Embed dimension ({embedding_dimension}) is differ with default collection dimension ({collection_dims})")

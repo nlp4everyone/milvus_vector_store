@@ -147,15 +147,15 @@ class MilvusVectorStore(BaseVectorStore):
                                     dimension_nums = dimension_nums,
                                     enable_sparse = enable_sparse)
 
+        # Verify dense dimension of collection
+        self._verify_collection_dimension(collection_name = self._collection_name,
+                                          embedding_dimension = dimension_nums)
+
         # Create partition if doesnt exist
         if not self.has_partition(collection_name = self._collection_name,
                                   partition_name = partition_name):
             # Create partition
             self._create_partition(partition_name = partition_name)
-        else:
-            # Verify dense dimension of collection
-            self.__verify_collection_dimension(collection_name = self._collection_name,
-                                               embedding_dimension = dimension_nums)
 
         # Iterate over the data with batch
         for i in range(0, len(nodes), uploading_batch_size):
@@ -217,8 +217,8 @@ class MilvusVectorStore(BaseVectorStore):
             query_embedding = self._embed_query(queries = query,
                                                 embedding_model = self._dense_embedding_model)
             # Verify embedding size
-            self.__verify_collection_dimension(collection_name = self._collection_name,
-                                               embedding_dimension = len(query_embedding[0]))
+            self._verify_collection_dimension(collection_name = self._collection_name,
+                                              embedding_dimension = len(query_embedding[0]))
             # Dense anns fields
             anns_field = default_keys[1]
         else:
@@ -394,42 +394,6 @@ class MilvusVectorStore(BaseVectorStore):
                 final_output.append(self._convert_response_to_node_with_score(responses = result))
         return final_output
 
-    def __verify_collection_dimension(self,
-                                      collection_name :str,
-                                      embedding_dimension :int) -> None:
-        """
-        Verify config of dense representation index
-        :param collection_name: The collection name
-        :param embedding_dimension: Embedding dimension
-        :return: None
-        """
-        # Check partition stats
-        stats = self.describe_collection(collection_name = collection_name)
-
-        # Embedding stats
-        collection_stats = dict(stats).get("fields")
-        if collection_stats is None:
-            raise ValueError("Fields not existed in collection")
-        # Stats
-        collection_stats = [stats for stats in collection_stats if dict(stats).get("name") == default_keys[1]]
-        if len(collection_stats) == 0:
-            raise ValueError("Empty embedding field!")
-
-        # Params
-        collection_params = dict(collection_stats[0]).get("params")
-        if collection_params is None:
-            raise ValueError("Empty params field!")
-        # Dims
-        collection_dims = dict(collection_params).get("dim")
-        if collection_dims is None:
-            raise ValueError("Empty dim field!")
-
-        # Check type
-        if not isinstance(collection_dims,int):
-            raise ValueError("Collection dims must be integer!")
-        # Check dims
-        if embedding_dimension != collection_dims:
-            raise ValueError(f"Embed dimension ({embedding_dimension}) is differ with default collection dimension ({collection_dims})")
 
 
 
