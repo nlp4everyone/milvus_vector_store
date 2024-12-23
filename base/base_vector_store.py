@@ -224,15 +224,16 @@ class BaseVectorStore(MilvusClient):
         results = []
         for response in responses:
             # Get the main part
-            temp = dict(response['entity'])
-            # temp.update({"score": response['distance']})
+            entity = dict(response['entity'])
             # Remove embedding
-            if remove_embedding: temp.update({default_keys[1]:None,
-                                              default_keys[2]:None})
-            results.append(temp)
-
+            if remove_embedding: entity.update({default_keys[1]:None,
+                                                default_keys[2]:None})
+            # Add score to metadata
+            entity.setdefault("metadata",{}).setdefault("score",response.get("distance"))
+            # Append Document object to final results
+            results.append(Document.parse_obj(entity))
         # Return Document
-        return [Document.parse_obj(result) for result in results]
+        return results
 
     @staticmethod
     def _convert_csr_array_to_dict(csr_array :scipy.sparse.csr_array) -> dict:

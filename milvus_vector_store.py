@@ -247,7 +247,9 @@ class MilvusVectorStore(BaseVectorStore):
                               **kwargs)
 
         # Return
-        return self.__convert_retrieval_nodes(results, return_type)
+        return self.__convert_retrieval_nodes(total_results = results,
+                                              collection_fields = collection_fields,
+                                              return_type = return_type)
 
     def hybrid_query(self,
                      query: Union[str,List[str]],
@@ -332,7 +334,10 @@ class MilvusVectorStore(BaseVectorStore):
                                      output_fields = collection_fields,
                                      **kwargs)
         # Return
-        return self.__convert_retrieval_nodes(results, return_type)
+        # Return
+        return self.__convert_retrieval_nodes(total_results = results,
+                                              collection_fields = collection_fields,
+                                              return_type = return_type)
 
     def collection_info(self):
         """
@@ -359,7 +364,8 @@ class MilvusVectorStore(BaseVectorStore):
         return self.list_partitions(collection_name = self._collection_name)
 
     def __convert_retrieval_nodes(self,
-                                  results,
+                                  total_results,
+                                  collection_fields,
                                   return_type: Literal["auto", "BasePoints"] = "auto"):
         """
         Normalize node with specific type
@@ -367,31 +373,32 @@ class MilvusVectorStore(BaseVectorStore):
         :param return_type: Desired result. Default is auto
         :return:
         """
-        results = list(results)
+        total_results = list(total_results)
         # Check len
-        if len(results) == 0:
+        if len(total_results) == 0:
             # Return empty list
             return []
         # Convert result to list
         # Desired output
-        for result in results:
+        for k_result in total_results:
             # Remove embedding
-            for i in range(len(result)):
-                result[i]["entity"].update({default_keys[1]: None,
-                                            default_keys[2]: None})
+            for i in range(len(k_result)):
+                k_result[i]["entity"].update({default_keys[1]: None,
+                                              default_keys[2]: None})
         # Return BasePoint
         if return_type == "BasePoints":
-            return results
+            return total_results
 
         final_output = []
-        # Auto mode
-        for result in results:
-            # Auto mode
-            if result[0]["entity"].get("page_content"):
-                # Document case
-                final_output.append(self._convert_response_to_document(responses = result))
-            else:
-                final_output.append(self._convert_response_to_node_with_score(responses = result))
+        # Document case
+        if "page_content" in collection_fields:
+            for k_result in total_results:
+                final_output.append(self._convert_response_to_document(responses = k_result))
+        else:
+            # Node case
+            for k_result in total_results:
+                final_output.append(self._convert_response_to_node_with_score(responses = k_result))
+        # Return value
         return final_output
 
 

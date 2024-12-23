@@ -425,23 +425,23 @@ class ImageMilvusVectorStore(BaseVectorStore):
 
         # Convert result to list
         # Desired output
-        for result in results:
+        for k_result in results:
             # Remove embedding
-            for i in range(len(result)):
-                result[i]["entity"].update({default_keys[1]: None,
-                                            image_node_field[18]: None})
+            for i in range(len(k_result)):
+                k_result[i]["entity"].update({default_keys[1]: None,
+                                              image_node_field[18]: None})
         # Return BasePoint
         if return_type == "BasePoints":
             return results
 
         final_output = []
         # Auto mode
-        for result in results:
+        for k_result in results:
             # Node Result
-            node_results = [ImageNode.parse_obj(dict(element).get("entity")) for element in result]
+            k_nodes = [ImageNode.parse_obj(dict(k_result[i]).get("entity")) for i in range(len(k_result))]
             # NodeWithScore
-            node_with_score = [NodeWithScore(node = node_results[i],
-                                             score = result[i]["distance"]) for i in range(len(node_results))]
+            node_with_score = [NodeWithScore(node = k_nodes[i],
+                                             score = k_result[i]["distance"]) for i in range(len(k_nodes))]
             # Append
             final_output.append(node_with_score)
         return final_output
